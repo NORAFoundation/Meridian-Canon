@@ -1,0 +1,3 @@
+DROP VIEW IF EXISTS chunks_search;
+DROP INDEX IF EXISTS chunks_tsv_idx;
+ALTER TABLE chunks DROP COLUMN IF EXISTS tsv;

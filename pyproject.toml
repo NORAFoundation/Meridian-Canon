@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "meridian-canon"
+version = "0.1.1"
+description = "Canon-conformant attestation layer for digital evidence systems"
+authors = [{name = "NORA Foundation"}]
+license = {text = "MIT"}
+requires-python = ">=3.10"
+dependencies = [
+    "pydantic>=2.5",
+    "cryptography>=42",
+    "rfc8785>=0.1.4",
+    "keyring>=24",
+    "ulid-py>=1.1",
+    "psycopg[binary,pool]>=3.1",
+    "reportlab>=4.0",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=7.4", "pytest-cov>=4.1"]
+embed = ["fastembed>=0.3"]
+
+[project.scripts]
+meridian-canon = "meridian.canon.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["meridian*"]
+
+[tool.pytest.ini_options]
+testpaths = [
+    "meridian/canon/tests",
+    "meridian/witness/tests",
+    "meridian/refute/tests",
+    "meridian/findings/tests",
+    "meridian/query/tests",
+    "meridian/export/tests",
+]
+addopts = "-q"
