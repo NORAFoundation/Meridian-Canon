@@ -89,13 +89,26 @@ For the architectural rationale, see the textbook chapters 13–20.
 
 ## License
 
-MIT for code. Canon spec is dedicated to the public domain (CC0).
+Meridian-Canon is **proprietary with open peer review**.
 
-## Contributing
+The Work is licensed under the **NORA Canon Evaluation & Commentary License v1.0** ([LICENSE](LICENSE)).
+You may **read**, **cite**, and **comment** on the Work. You may **not** implement, redistribute, commercialize, train models on, file patents on, or resell attestations derived from it without a separate written license from NORA Foundation. See [LICENSE § 4](LICENSE) for the full list of prohibited uses.
 
-This is an open-source reference implementation. Issues and pull requests welcome at <https://github.com/NORAFoundation/Meridian-Canon>.
+Licensing inquiries — including for Conformant Implementations and commercial use — go to **licensing@norafoundation.io**.
 
-When reporting bugs or contributing changes, do **not** include personal data, real case identifiers, or identifying file paths in examples — use synthetic identifiers (`EXAMPLE-MATTER-001`, `user@example.com`, etc.).
+**Prior-version carve-out:** versions at or before commit `dfdbabb` (v0.1.1) were released under MIT (with the Canon spec text dedicated to CC0). Those prior grants are irrevocable as to the versions then-published. The proprietary relicense applies from the Cutover Commit forward. See [NOTICE](NOTICE).
+
+## Contributing — peer review welcome
+
+Public peer review is the design intent of this repository. Critique the cryptography, find weaknesses in the falsifiability claim, propose schema corrections, file errata, open Discussions about threat models.
+
+By opening any Issue, Discussion, or PR you agree to the **Contributor Terms in [LICENSE § 3](LICENSE)**: your Contribution is irrevocably licensed to NORA Foundation under terms that permit relicensing. This keeps the canonical spec single-sourced while every weakness in it is found in the open.
+
+See **[CONTRIBUTING.md](CONTRIBUTING.md)** for how to participate and **[GOVERNANCE.md](GOVERNANCE.md)** for the decision process.
+
+Security issues: **do not file publicly.** Email **security@norafoundation.io**.
+
+Do **not** include personal data, real case identifiers, or identifying file paths in examples — use synthetic identifiers (`EXAMPLE-MATTER-001`, `user@example.com`, etc.).
 
 ## Citation
 

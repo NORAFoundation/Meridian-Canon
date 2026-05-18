@@ -1,21 +1,269 @@
-MIT License
+NORA CANON EVALUATION & COMMENTARY LICENSE
+Version 1.0, 2026-05-17
 
-Copyright (c) 2026 NORA Foundation
+Copyright (c) 2026 NORA Foundation. All Rights Reserved.
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+This License governs the Licensed Work identified as the contents of the
+NORAFoundation/Meridian-Canon repository ("the Work"). By accessing,
+downloading, viewing, cloning, forking on a public code-hosting platform
+for the purpose of submitting a Contribution, or otherwise interacting
+with the Work, You ("the User") agree to be bound by these terms.
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+If You do not agree to these terms, You may not access, download, view,
+or otherwise use the Work.
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+
+1. DEFINITIONS
+
+   "Work" means the source files, specifications, schemas, attestation
+   formats, canonicalization rules, verification procedures, documentation,
+   test vectors, reference implementation, and other materials contained
+   in the Repository, together with any subsequent revisions, but
+   excluding versions distributed under a prior license (see Section 8).
+
+   "Repository" means the public Git repository located at
+   https://github.com/NORAFoundation/Meridian-Canon and any authorized
+   mirror designated in writing by NORA Foundation.
+
+   "NORA Foundation" means the NORA Foundation, its officers, contractors,
+   successors, and assignees, the Licensor of the Work.
+
+   "Conformant Implementation" means any software, hardware, service,
+   product, or system that implements, in whole or in substantial part,
+   the protocols, schemas, attestation formats, canonicalization rules,
+   verification procedures, or other normative content of the Work.
+
+   "Contribution" has the meaning given in Section 3.
+
+
+2. GRANT OF LIMITED RIGHTS
+
+   Subject to Your continuous compliance with every provision of this
+   License, NORA Foundation grants You a non-exclusive, non-transferable,
+   non-sublicensable, revocable, royalty-free license to:
+
+   (a) READ — access and read the Work in the Repository or any
+       authorized mirror;
+
+   (b) CITE — quote, paraphrase, summarize, and cite the Work for the
+       purposes of academic study, journalism, civic education,
+       regulatory review, or evaluation of whether to seek a separate
+       license to make a Conformant Implementation, provided that each
+       such use includes attribution naming NORA Foundation and a link
+       to the Repository;
+
+   (c) COMMENT — submit feedback, error reports, suggestions, and
+       proposed changes through the official Issue tracker, Discussions
+       forum, or Pull Request mechanism of the Repository, subject to
+       Section 3.
+
+   No other rights are granted, by implication, estoppel, or otherwise.
+
+
+3. CONTRIBUTIONS
+
+   Any Issue, Discussion post, comment, Pull Request, code, text,
+   diagram, schema, test vector, suggestion, or other submission You
+   make to the Repository (each, a "Contribution"):
+
+   (a) is voluntary, and is submitted with the intent that it be
+       incorporated into the Work at the sole discretion of NORA
+       Foundation;
+
+   (b) is hereby irrevocably licensed by You to NORA Foundation under
+       a worldwide, perpetual, royalty-free, fully paid-up,
+       sublicensable license to use, reproduce, prepare derivative
+       works of, publicly display, publicly perform, sublicense, and
+       distribute the Contribution and any derivative works thereof,
+       in any medium and through any channel now known or later
+       developed, including the right to relicense the Contribution
+       under this License or any other license, including proprietary
+       and commercial licenses, without further consent from You and
+       without obligation of attribution or compensation;
+
+   (c) is, with respect to any patent claims You own or control that
+       are necessarily infringed by the Contribution or by the Work
+       as incorporating the Contribution, accompanied by an
+       irrevocable, worldwide, royalty-free, sublicensable patent
+       license to NORA Foundation and its licensees to make, have made,
+       use, sell, offer to sell, import, and otherwise transfer the
+       Contribution and the Work;
+
+   (d) is represented by You to be Your original work or work You are
+       authorized to submit, and is not subject to any third-party
+       claim, obligation, or encumbrance that would conflict with the
+       grants in this Section 3;
+
+   (e) carries no obligation on NORA Foundation to accept, acknowledge,
+       attribute, merge, or compensate You. NORA Foundation may, at its
+       discretion, list contributors in CONTRIBUTORS.md.
+
+   To the extent permitted by applicable law, You waive any moral
+   rights in the Contribution.
+
+
+4. PROHIBITED USES
+
+   Without separate prior written authorization signed by an authorized
+   officer of NORA Foundation, You MAY NOT:
+
+   (a) IMPLEMENTATION — implement, deploy, run, host, distribute, sell,
+       lease, license, or otherwise commercialize or operationalize any
+       Conformant Implementation of the Work, in whole or in part,
+       whether for Your own use or for others;
+
+   (b) DERIVATIVE SPECIFICATION — create, publish, present, or
+       distribute any specification, schema, protocol document,
+       technical standard, or RFC that is derived from, modeled on,
+       or substantially similar to the Work;
+
+   (c) REDISTRIBUTION — redistribute the Work, in original or modified
+       form, outside the Repository or an authorized mirror; nor permit
+       any third party to do so;
+
+   (d) COMMERCIAL USE — use the Work, or any portion thereof, in
+       connection with any commercial product, service, hosted offering,
+       consulting engagement, or other commercial endeavor;
+
+   (e) MACHINE LEARNING TRAINING — use the Work, in whole or in part,
+       as training data, fine-tuning data, retrieval-augmented
+       generation corpora, evaluation or benchmark data, or input of
+       any kind to any machine-learning model, large language model,
+       embedding model, generative system, classifier, or AI pipeline;
+       nor permit any agent, scraper, crawler, or automated system to
+       do so on Your behalf; nor distribute model weights, embeddings,
+       or other artifacts derived from the Work;
+
+   (f) PATENT CLAIMS — file, prosecute, maintain, acquire, enforce, or
+       assist any third party in filing, prosecuting, maintaining,
+       acquiring, or enforcing any patent application or patent that
+       claims, in whole or in part, any subject matter disclosed in,
+       described by, or derivable from the Work; and to the extent
+       You obtain or hold any such patent notwithstanding this
+       prohibition, You hereby grant NORA Foundation and its licensees
+       an irrevocable, worldwide, royalty-free, sublicensable license
+       to practice it;
+
+   (g) ATTESTATION RESALE — resell, sublicense, redistribute, broker,
+       repackage, or commercially exploit any attestation, certificate,
+       signature, audit, verification, or other output produced by
+       NORA Foundation or by any issuer authorized by NORA Foundation
+       (including without limitation the canonical NORA Issuer); nor
+       create or operate any service that depends on or charges for
+       access to such outputs;
+
+   (h) EVIDENTIARY USE AGAINST NORA — cite, introduce, file, attach,
+       or otherwise rely upon the Work, or any portion of it, as
+       evidence, argument, exhibit, declaration, or precedent in any
+       judicial, administrative, arbitral, regulatory, or legislative
+       proceeding against NORA Foundation, its officers, contributors,
+       custodians, affiliates, successors, or assignees, without NORA
+       Foundation's prior written consent. This clause does not limit
+       a litigant's rights to introduce a published version of the
+       Work as evidence of its own public contents where governing
+       procedural law expressly requires such introduction and no
+       reasonable alternative exists.
+
+   Engaging in any prohibited use is a material breach of this License
+   and automatically terminates the grants in Section 2.
+
+
+5. TERMINATION
+
+   The rights granted in Section 2 terminate automatically and without
+   notice upon Your breach of any provision of this License. Upon
+   termination, You shall immediately cease all use of the Work and
+   destroy all copies in Your possession or control. The licenses
+   granted by You in Section 3 are irrevocable and survive termination,
+   as do Sections 4(e), 4(f), 5, 6, 7, 10, and 11.
+
+
+6. NO WARRANTY
+
+   THE WORK IS PROVIDED "AS IS" AND "AS AVAILABLE", WITHOUT WARRANTY
+   OF ANY KIND, EXPRESS, IMPLIED, OR STATUTORY, INCLUDING WITHOUT
+   LIMITATION THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+   PARTICULAR PURPOSE, NONINFRINGEMENT, ACCURACY, COMPLETENESS, AND
+   QUIET ENJOYMENT. YOU ASSUME THE ENTIRE RISK ARISING OUT OF YOUR
+   USE OF, OR INABILITY TO USE, THE WORK.
+
+
+7. LIMITATION OF LIABILITY
+
+   IN NO EVENT, AND UNDER NO LEGAL THEORY, SHALL NORA FOUNDATION BE
+   LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY,
+   PUNITIVE, OR CONSEQUENTIAL DAMAGES (INCLUDING WITHOUT LIMITATION
+   LOSS OF PROFITS, DATA, GOODWILL, OR BUSINESS INTERRUPTION), HOWEVER
+   CAUSED AND ON ANY THEORY OF LIABILITY, ARISING IN ANY WAY OUT OF
+   OR IN CONNECTION WITH THE WORK OR THIS LICENSE, EVEN IF NORA
+   FOUNDATION HAS BEEN ADVISED OF THE POSSIBILITY OF SUCH DAMAGES.
+
+
+8. PRIOR-VERSION CARVE-OUT
+
+   Versions of the Work distributed in this Repository at or before
+   the Git commit immediately preceding the commit that introduced
+   this License (the "Cutover Commit") were released under the MIT
+   License, with the Canon specification text additionally dedicated
+   to the public domain under CC0 1.0 Universal as stated in the
+   then-current README.
+
+   THOSE PRIOR GRANTS ARE IRREVOCABLE AS TO THE VERSIONS THEN-PUBLISHED.
+   A person who obtained a copy of the Work at or before the Cutover
+   Commit retains the rights granted under the MIT License (and,
+   where applicable, CC0 1.0 Universal) with respect to that specific
+   copy.
+
+   This License applies, exclusively, to the Work as constituted at
+   and after the Cutover Commit, and to all subsequent revisions,
+   additions, and Contributions. Any new file, new function, new
+   schema element, new specification text, or modification introduced
+   at or after the Cutover Commit is governed by this License.
+
+   See the NOTICE file for the SHA of the Cutover Commit.
+
+
+9. TRADEMARKS
+
+   "NORA," "NORA Foundation," "Meridian," "Meridian-Canon," "Canon
+   Attestation," "NORA Canon," and any associated logos are
+   trademarks of NORA Foundation. This License does not grant any
+   rights to use these marks, except solely for the attribution
+   required by Section 2(b).
+
+
+10. GOVERNING LAW AND VENUE
+
+    This License shall be governed by and construed in accordance with
+    the laws of the State of Wisconsin, United States of America,
+    without regard to its conflict-of-law principles. The United
+    Nations Convention on Contracts for the International Sale of
+    Goods does not apply. Any dispute arising out of or relating to
+    this License shall be brought exclusively in the state or federal
+    courts located in Pierce County, Wisconsin, and the parties consent
+    to the personal jurisdiction of those courts.
+
+
+11. SEVERABILITY; ENTIRE AGREEMENT; NO WAIVER
+
+    If any provision of this License is held unenforceable, that
+    provision shall be enforced to the maximum extent permissible and
+    the remaining provisions shall remain in full force and effect.
+    This License is the entire agreement between You and NORA
+    Foundation concerning the Work and supersedes all prior or
+    contemporaneous understandings. No failure or delay by NORA
+    Foundation in exercising any right shall operate as a waiver.
+
+
+12. LICENSING INQUIRIES
+
+    Requests for separate licenses — including but not limited to
+    licenses to implement, redistribute, train models on, or
+    commercially use the Work — shall be directed in writing to:
+
+        NORA Foundation
+        Attn: Licensing
+        licensing@norafoundation.io
+        https://norafoundation.io
+
+— END OF LICENSE —
