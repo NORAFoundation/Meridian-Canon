@@ -1,0 +1,57 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+*.egg
+.installed.cfg
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.mypy_cache/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment / secrets
+.env
+.env.local
+*.pem
+*.key
+keys/private/
+# Exported conversation logs and personal notes — never commit
+20[0-9][0-9]-[0-9][0-9]-[0-9][0-9]-*.txt
+# keyring file backend storage
+keyring_pass.cfg
+python_keyring/
+
+# Local storage / runtime state
+_storage/
+storage/
+output/
+
+# Build artifacts
+build/
+dist/
+
+# Project-specific runtime
+.canon/
+sealed/

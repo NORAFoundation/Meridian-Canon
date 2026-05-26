@@ -1,0 +1,33 @@
+# Postgres-only dev stack — fast iteration, no auth, no Supabase services.
+# Host port 5433; DATABASE_URL=postgresql://postgres:postgres@localhost:5433/litdb
+#
+# For the full Supabase stack (Studio, Kong, GoTrue, PostgREST, Realtime,
+# Storage, Vector), see ../supabase/docker-compose.yml. The two stacks bind
+# different host ports (5433 here vs 54322 there) so they don't collide,
+# but they are independent databases — pick one for a given session.
+services:
+  db:
+    build: .
+    image: litdb-postgres:local
+    container_name: litdb-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: litdb
+    ports:
+      - "5433:5432"           # 5433 to avoid clashing with a host Postgres
+    volumes:
+      - litdb_data:/var/lib/postgresql/data
+      # Mount the schema/seed in read-only for easy psql -f from inside the container.
+      - ../schema:/litdb/schema:ro
+      - ../seed.sql:/litdb/seed.sql:ro
+      - ../cookbook.sql:/litdb/cookbook.sql:ro
+      - ../drop_all.sql:/litdb/drop_all.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d litdb"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  litdb_data:

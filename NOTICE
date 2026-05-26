@@ -1,0 +1,74 @@
+NOTICE — Meridian-Canon Licensing
+==================================
+
+This repository (NORAFoundation/Meridian-Canon) is licensed under the
+NORA CANON EVALUATION & COMMENTARY LICENSE, Version 1.0 (the "License").
+
+See the LICENSE file for full terms. See CONTRIBUTING.md for how to
+participate in peer review. See GOVERNANCE.md for the decision process.
+
+
+PRIOR-VERSION CARVE-OUT
+-----------------------
+
+Versions of the Work distributed at or before Git commit
+
+    dfdbabb   "Initial public release v0.1.1"
+
+were released under the MIT License, with the Canon specification text
+additionally dedicated to the public domain under CC0 1.0 Universal as
+stated in the v0.1.1 README.
+
+THOSE PRIOR GRANTS ARE IRREVOCABLE as to the versions then-published.
+Anyone who obtained a copy of the Work at or before commit dfdbabb
+retains the rights granted under the MIT License (and, where applicable,
+CC0 1.0 Universal) with respect to that specific copy.
+
+The proprietary relicense effected by the License applies only to
+material added or modified from the Cutover Commit forward.
+
+    Cutover Commit: 05ebe1a
+    Cutover Date:   2026-05-18
+    Spec Version:   v0.2.0
+
+
+CONTRIBUTIONS
+-------------
+
+Contributions to the Work — at any point in its history — are and have
+been licensed by their authors under terms permitting NORA Foundation
+to incorporate and relicense them. Acceptance of a Contribution into
+this Repository constitutes the contributor's grant of license to NORA
+Foundation as set out in Section 3 of the LICENSE.
+
+The repository's `git log` and the `CONTRIBUTORS.md` file (when present)
+serve as the record of authorship for purposes of attribution. NORA
+Foundation retains the right to omit, redact, or pseudonymize
+contributor identities at its discretion or at the contributor's
+written request.
+
+
+TRADEMARKS
+----------
+
+"NORA," "NORA Foundation," "Meridian," "Meridian-Canon," "Canon
+Attestation," "NORA Canon," and any associated logos are unregistered
+trademarks of NORA Foundation. Use of these marks is subject to
+Section 9 of the LICENSE.
+
+
+THIRD-PARTY COMPONENTS
+----------------------
+
+The reference implementation in `meridian/` and supporting code may
+depend on third-party open-source libraries, each governed by its own
+license. Those licenses are unaffected by the License and remain in
+force as to those components. A consolidated third-party-licenses
+manifest will be published in a future release; until then, see each
+component's package metadata.
+
+
+COPYRIGHT
+---------
+
+Copyright (c) 2026 NORA Foundation. All Rights Reserved.

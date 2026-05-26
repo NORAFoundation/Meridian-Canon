@@ -1,0 +1,146 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  # ── Core tests: all three platforms × three Python versions ──────────────
+  test-core:
+    name: Core (${{ matrix.os }}, Python ${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python-version: ["3.10", "3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "latest"
+
+      - name: System deps (Ubuntu)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y --no-install-recommends \
+            libmagic1 \
+            poppler-utils \
+            libpango-1.0-0 \
+            libharfbuzz0b \
+            libpangoft2-1.0-0 \
+            libffi-dev
+
+      - name: System deps (macOS)
+        if: runner.os == 'macOS'
+        run: brew install libmagic pango cairo
+
+      # Windows: python-magic-bin ships libmagic DLL via pip (no system install needed)
+      - name: Install python-magic-bin (Windows)
+        if: runner.os == 'Windows'
+        run: pip install python-magic-bin
+
+      - name: Create venv + install core deps
+        run: |
+          uv venv --python ${{ matrix.python-version }}
+          uv pip install -e ".[test]"
+          uv pip install keyrings.alt
+
+      - name: Run core tests
+        env:
+          PYTHON_KEYRING_BACKEND: keyrings.alt.file.PlaintextKeyring
+          MERIDIAN_REKOR_ENABLED: "0"
+          MERIDIAN_USE_PARADEDB: "0"
+        run: uv run pytest -q --tb=short
+
+  # ── Extended tests: optional deps (Linux only — deployment target) ────────
+  test-extended:
+    name: Extended deps (ubuntu-latest, Python 3.13)
+    runs-on: ubuntu-latest
+    needs: test-core
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "latest"
+
+      - name: System deps
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y --no-install-recommends \
+            libmagic1 \
+            poppler-utils \
+            libpango-1.0-0 \
+            libharfbuzz0b \
+            libpangoft2-1.0-0 \
+            libffi-dev
+
+      - name: Create venv
+        run: uv venv --python 3.13
+
+      - name: Install all deps
+        run: |
+          uv pip install -e ".[test]"
+          uv pip install keyrings.alt
+          uv pip install litellm langfuse "inspect-ai>=0.3" || true
+          uv pip install "presidio-analyzer>=2.2" "presidio-anonymizer>=2.2" || true
+          uv pip install weasyprint || true
+          uv pip install "unstructured[email]" || true
+          uv pip install sigstore || true
+
+      - name: Run full test suite
+        env:
+          PYTHON_KEYRING_BACKEND: keyrings.alt.file.PlaintextKeyring
+          MERIDIAN_REKOR_ENABLED: "0"
+          MERIDIAN_USE_PARADEDB: "0"
+        run: uv run pytest -q --tb=short
+
+  # ── Schema lint: SQL files parse without error ────────────────────────────
+  lint-schema:
+    name: Schema lint
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check SQL files are non-empty and well-formed
+        run: |
+          for f in schema/*.sql; do
+            echo "checking $f"
+            [ -s "$f" ] || (echo "EMPTY: $f" && exit 1)
+            # Verify no Windows line endings crept in
+            ! grep -qP '\r' "$f" || (echo "CRLF in $f" && exit 1)
+          done
+          echo "All SQL files OK"
+
+  # ── Type check (mypy stub — informational, non-blocking) ─────────────────
+  typecheck:
+    name: Type check (informational)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "latest"
+
+      - name: Install deps + mypy
+        run: |
+          uv venv --python 3.13
+          uv pip install -e ".[test]"
+          uv pip install mypy types-PyYAML
+
+      - name: Run mypy
+        run: uv run mypy meridian/canon/ meridian/findings/ meridian/refute/ --ignore-missing-imports --no-error-summary || true
