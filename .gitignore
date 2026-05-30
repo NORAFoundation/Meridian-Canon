@@ -55,3 +55,6 @@ dist/
 # Project-specific runtime
 .canon/
 sealed/
+.venv/
+*.egg-info/
+__pycache__/
