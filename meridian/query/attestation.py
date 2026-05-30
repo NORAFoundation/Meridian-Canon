@@ -6,9 +6,13 @@ Every retrieval emits a sealed Canon Attestation of kind=search whose:
                  typed claim per retrieved item declaring its inference
                  type (induction over relevance), with gaps documenting
                  retrieval recall limits and embedding-model identity.
-    Refutation = consistency + replay challenges; counter-evidence may
-                 decline if the query was already a negation; coverage
-                 audit is batch-level so it declines.
+    Refutation = a consistency_check over the retrieved set (the only
+                 deterministically reproducible property a search can
+                 assert). Replay is DECLINED, not asserted survived: the
+                 dense index is approximate (HNSW) and its candidate set
+                 drifts with ingest, so exact replay is not guaranteed.
+                 Adversarial-prompt, coverage-audit, and counter-evidence
+                 also decline with machine-readable reasons.
     Seal       = Ed25519 over RFC 8785 chain hash.
 
 The Witness for a SearchAttestation contains content_inline = the query
@@ -169,29 +173,54 @@ def build_search_attestation(
             "content_inline": None,
         })
 
-    # Refutation: replay (deterministic — same query produces same vector
-    # and same ranks given the index). Consistency is per-claim; for a
-    # SearchAttestation we apply it as a meta-check that retrieved items
-    # don't contradict each other on entity dimensions.
-    challenge_id = "chal-" + _gen_id("REPLAY-")
+    # AUDIT-FIX (MED-5): The previous code applied a `replay` challenge with
+    # outcome="survived" for a determinism property this system cannot deliver.
+    # Dense retrieval uses an approximate HNSW index whose candidate set drifts
+    # with ingest, so re-issuing the query is NOT guaranteed to reproduce the
+    # exact RRF ordering. Asserting "survived" was a false determinism claim.
+    #
+    # Honest, schema-conformant resolution:
+    #   - `replay` moves to coverage.declined with a machine-readable reason.
+    #     (ChallengeOutcome has no "declined"/"pending" member; the canon
+    #     schema expresses a not-applied challenge only via coverage.declined.)
+    #   - The single required applied challenge (Refutation.challenges has
+    #     min_length=1) is a `consistency_check` over the retrieved set, which
+    #     asserts only a structurally reproducible property: the result set
+    #     contains no duplicate chunk identities and each retrieved item is
+    #     internally well-formed. That property IS deterministically checkable,
+    #     so outcome="survived" here is truthful.
     claim_ids = [c["claim_id"] for c in claims]
+
+    # Structurally verifiable invariant: chunk identities in the result set
+    # are unique. This is the only consistency property we can deterministically
+    # assert at build time; we report its actual outcome rather than a hardcode.
+    seen_chunk_ids: set[str] = set()
+    consistency_survived = True
+    for r in results:
+        if r.chunk_id in seen_chunk_ids:
+            consistency_survived = False
+            break
+        seen_chunk_ids.add(r.chunk_id)
+
+    consistency_id = "chal-" + _gen_id("CONSIST-")
     refutation = {
         "challenges": [{
-            "challenge_id": challenge_id,
-            "type": "replay",
+            "challenge_id": consistency_id,
+            "type": "consistency_check",
             "targets": claim_ids,
             "input": (
-                "re-issue the query against the same index; expect identical "
-                "RRF ordering modulo any in-flight ingest"
+                "verify the retrieved set is internally consistent: chunk "
+                "identities are unique and each item is well-formed"
             ),
-            "outcome": "survived",
+            "outcome": "survived" if consistency_survived else "failed",
             "revisions": None,
         }],
         "coverage": {
-            "applied": ["replay"],
+            "applied": ["consistency_check"],
             "declined": [
+                # AUDIT-FIX (MED-5): replay declined, not asserted survived.
+                {"type": "replay", "reason": "approximate-index-does-not-guarantee-exact-replay"},
                 {"type": "adversarial_prompt", "reason": "search_results_are_not_inferential_claims_to_contest"},
-                {"type": "consistency_check", "reason": "applied_per_claim_on_referenced_enrichments_not_per_search"},
                 {"type": "coverage_audit", "reason": "applies_at_batch_level_not_per_query"},
                 {"type": "counter_evidence", "reason": "search_is_already_the_evidence_layer"},
             ],

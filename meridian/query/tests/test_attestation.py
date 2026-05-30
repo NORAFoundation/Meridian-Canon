@@ -105,6 +105,64 @@ def test_search_attestation_with_reranker_records_it() -> None:
     assert "Cross-encoder re-rank applied" in att["findings"]["method"]
 
 
+def test_replay_is_declined_not_asserted_survived() -> None:
+    """AUDIT-FIX (MED-5): replay must NOT be applied with outcome=survived
+    (the approximate HNSW index cannot guarantee exact replay). It must be
+    declined with a machine-readable reason instead."""
+    att = build_search_attestation(
+        query="x", results=_sample_results(), issuer="t", matter_id=None,
+        custodian=CUSTODIAN,
+    )
+    refutation = att["refutation"]
+    # No replay challenge is asserted as applied.
+    applied_types = {c["type"] for c in refutation["challenges"]}
+    assert "replay" not in applied_types
+    assert "replay" not in refutation["coverage"]["applied"]
+    # Replay is declined with the determinism-limitation reason.
+    declined = {d["type"]: d["reason"] for d in refutation["coverage"]["declined"]}
+    assert "replay" in declined
+    assert declined["replay"] == "approximate-index-does-not-guarantee-exact-replay"
+
+
+def test_applied_consistency_check_outcome_is_real() -> None:
+    """The single applied challenge is a consistency_check whose outcome
+    reflects an actually-checkable property (unique chunk identities)."""
+    att = build_search_attestation(
+        query="x", results=_sample_results(), issuer="t", matter_id=None,
+        custodian=CUSTODIAN,
+    )
+    challenges = att["refutation"]["challenges"]
+    assert len(challenges) == 1
+    ch = challenges[0]
+    assert ch["type"] == "consistency_check"
+    # _sample_results() has distinct chunk ids -> consistency survives.
+    assert ch["outcome"] == "survived"
+
+
+def test_search_attestation_with_med5_fix_still_seals_and_walks(
+    published_keypair: tuple[str, str],
+) -> None:
+    """The MED-5 refutation rewrite must remain Canon-conformant (seals,
+    and every challenge type is accounted for in coverage)."""
+    fingerprint, url = published_keypair
+    att = build_search_attestation(
+        query="deposition scheduling",
+        results=_sample_results(),
+        issuer="search-issuer",
+        matter_id="33333333-3333-3333-3333-333333333333",
+        custodian=CUSTODIAN,
+    )
+    sealed = emit.emit(att, custodian=CUSTODIAN, public_key_url=url, fingerprint=fingerprint)
+    assert sealed["kind"] == "search"
+    # All five canon challenge types are either applied or declined.
+    cov = sealed["refutation"]["coverage"]
+    accounted = set(cov["applied"]) | {d["type"] for d in cov["declined"]}
+    assert accounted == {
+        "replay", "adversarial_prompt", "consistency_check",
+        "coverage_audit", "counter_evidence",
+    }
+
+
 def test_empty_results_seals_safely(published_keypair: tuple[str, str]) -> None:
     """A query that returned no results still produces a valid Attestation
     (it records the absence as a method-summary claim)."""
