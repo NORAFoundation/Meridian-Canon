@@ -38,16 +38,25 @@ CANON_VERSION_SUPPORTED = {"0.1.0", "0.1.1", "0.2.0"}
 # the verdict carries an explicit `trust_warning` flag so callers cannot
 # mistake INTEGRITY for AUTHENTICITY.
 #
-# AUDIT-TODO (K2 — REMAINING, K2#2/K2#3, not built here):
-#   K2#2 — transparency-log-backed verification: require a Rekor (or
-#          equivalent) inclusion proof for the signature/key so that issuance
-#          is publicly logged and append-only, and a hidden second signing is
-#          detectable. This removes the need to pin every issuer manually.
+# AUDIT-FIX (K2#2): transparency-log-backed verification is now AVAILABLE via
+# the `require_transparency` flag (+ optional `log_public_key_pem`) on
+# walk()/walk_dsse(). When enabled and the attestation carries a Rekor
+# inclusion proof, the verifier recomputes the RFC 6962 Merkle root OFFLINE
+# from the stored proof bundle and the attestation's own canonical bytes — a
+# FAILED inclusion ⇒ valid=False. When enabled but NO proof is present, the
+# verifier fails closed ("transparency required but absent"). When disabled,
+# behavior is unchanged but the verdict notes transparency was not checked.
+# Verification is purely cryptographic (no network) and operates on the stored
+# proof bundle, so offline verification still works.
+#
+# AUDIT-TODO (K2 — REMAINING, K2#3, not built here):
 #   K2#3 — full key transparency: CT-style monitored log of issuer keys with
 #          rotation + revocation semantics, so pinning can be replaced by a
 #          monitored gossiped log rather than a static checked-in allowlist.
-# Until K2#2/K2#3 land, pinning (K2#1) is the trust anchor; without a pin,
-# walk() verifies INTEGRITY, not AUTHENTICITY.
+#          K2#2 gives append-only inclusion of *entries*; K2#3 gives
+#          append-only transparency of *keys*.
+# Without a pin (K2#1) AND without a transparency proof (K2#2), walk() verifies
+# INTEGRITY, not AUTHENTICITY.
 
 # Machine-readable flag emitted when no out-of-band trust anchor is provided.
 TRUST_WARNING = (
@@ -296,10 +305,56 @@ def _step7_coverage_assessment(attestation: dict[str, Any]) -> str:
     return f"informational: {len(declined)} declined challenge type(s)"
 
 
+def _step_transparency(
+    attestation_for_canonical: dict[str, Any],
+    proof_carrier: dict[str, Any],
+    *,
+    require_transparency: bool,
+    log_public_key_pem: bytes | None = None,
+) -> str:
+    """K2#2: verify the Rekor inclusion proof OFFLINE against the attestation.
+
+    `attestation_for_canonical` is the dict whose rfc8785 canonical bytes (seal
+    excluded) were committed to the log — i.e. the inline attestation, or the
+    decoded inner attestation of a DSSE envelope. `proof_carrier` is the object
+    that may carry the stored `transparency` proof block (same dict for inline;
+    for DSSE either the envelope or the inner attestation may carry it).
+
+    Returns:
+      * "not_checked: ..."   when require_transparency is False (informational).
+      * "pass: ..."          when a proof is present and inclusion verifies.
+      * "fail: ..."          when required-but-absent, or inclusion FAILS.
+    """
+    from . import transparency as _t
+
+    proof = _t.extract_rekor_proof(proof_carrier)
+    if proof is None and proof_carrier is not attestation_for_canonical:
+        # DSSE: the proof may live on the inner attestation instead of envelope.
+        proof = _t.extract_rekor_proof(attestation_for_canonical)
+
+    if proof is None:
+        if require_transparency:
+            return (
+                "fail: transparency required but absent — no Rekor inclusion "
+                "proof found on the attestation (fail closed per require_transparency)"
+            )
+        return "not_checked: transparency not required and no proof present"
+
+    entry_bytes = _t.canonical_entry_bytes(attestation_for_canonical)
+    result = _t.verify_entry_bundle(
+        entry_bytes, proof, log_public_key_pem=log_public_key_pem
+    )
+    if result.verified:
+        return f"pass: {result.reason}"
+    return f"fail: transparency inclusion check failed: {result.reason}"
+
+
 def walk_dsse(
     envelope: dict[str, Any],
     *,
     trust_anchor: str | dict[str, str] | None = None,
+    require_transparency: bool = False,
+    log_public_key_pem: bytes | None = None,
 ) -> dict[str, Any]:
     """Walk a v0.2.0 DSSE envelope. Returns a verdict dict (same shape as walk()).
 
@@ -395,9 +450,19 @@ def walk_dsse(
     s6 = _step6_refutation_targets(inner)
     s6b = _step6b_challenge_outcomes(inner)  # AUDIT-FIX (R3)
     s7 = _step7_coverage_assessment(inner)
+    # K2#2: transparency-log inclusion. The committed bytes are the inner
+    # attestation's canonical bytes; the proof may ride on the envelope or inner.
+    s8 = _step_transparency(
+        inner, envelope,
+        require_transparency=require_transparency,
+        log_public_key_pem=log_public_key_pem,
+    )
 
     binary_steps = [s1, s2, s3, s5, s6, s6b]
     valid = all(s == "pass" for s in binary_steps) and s4["failed"] == 0
+    # K2#2: only the fail:* outcome blocks validity. pass:/not_checked: do not.
+    if s8.startswith("fail"):
+        valid = False
 
     result = {
         "verdict": "valid" if valid else "invalid",
@@ -412,9 +477,17 @@ def walk_dsse(
             "step6_refutation_targets": s6,
             "step6b_challenge_outcomes": s6b,
             "step7_coverage_assessment": s7,
+            "step8_transparency": s8,
         },
         # K2#1: explicit authenticity provenance for the verdict.
         "trust_basis": "pinned" if trust_anchor is not None else "in-band",
+        # K2#2: explicit transparency provenance for the verdict.
+        "transparency_basis": (
+            "verified" if s8.startswith("pass")
+            else "required-absent" if s8.startswith("fail") and "absent" in s8
+            else "failed" if s8.startswith("fail")
+            else "not-checked"
+        ),
     }
     if trust_anchor is None:
         result["trust_warning"] = TRUST_WARNING
@@ -425,6 +498,8 @@ def walk(
     attestation: dict[str, Any],
     *,
     trust_anchor: str | dict[str, str] | None = None,
+    require_transparency: bool = False,
+    log_public_key_pem: bytes | None = None,
 ) -> dict[str, Any]:
     """Run the seven-step falsification protocol. Returns a verdict dict.
 
@@ -443,10 +518,25 @@ def walk(
       When omitted, behavior is unchanged BUT the result carries an explicit,
       machine-readable `trust_warning` and `trust_basis: "in-band"` so callers
       cannot mistake INTEGRITY for AUTHENTICITY.
+
+    Transparency (K2#2):
+      `require_transparency` (+ optional `log_public_key_pem`): when True and the
+      attestation carries a Rekor inclusion proof, step 8 recomputes the RFC 6962
+      Merkle root OFFLINE from the stored proof bundle and the attestation's own
+      canonical bytes; a FAILED inclusion ⇒ `valid=False`. When True but no proof
+      is present, the verifier FAILS CLOSED ("transparency required but absent").
+      When False, behavior is unchanged but the verdict's `step8_transparency` /
+      `transparency_basis` note that transparency was not checked. No network is
+      used — verification operates purely on the stored proof bundle.
     """
     # Dispatch: DSSE envelope vs inline-seal Attestation
     if "payload" in attestation and "payload_type" in attestation:
-        return walk_dsse(attestation, trust_anchor=trust_anchor)
+        return walk_dsse(
+            attestation,
+            trust_anchor=trust_anchor,
+            require_transparency=require_transparency,
+            log_public_key_pem=log_public_key_pem,
+        )
 
     if attestation.get("canon_version") not in CANON_VERSION_SUPPORTED:
         return {
@@ -474,9 +564,18 @@ def walk(
     s6 = _step6_refutation_targets(attestation)
     s6b = _step6b_challenge_outcomes(attestation)  # AUDIT-FIX (R3)
     s7 = _step7_coverage_assessment(attestation)
+    # K2#2: transparency-log inclusion (inline: same dict carries proof + bytes).
+    s8 = _step_transparency(
+        attestation, attestation,
+        require_transparency=require_transparency,
+        log_public_key_pem=log_public_key_pem,
+    )
 
     binary_steps = [s1_msg, s2, s3, s5, s6, s6b]
     valid = all(s == "pass" for s in binary_steps) and s4["failed"] == 0
+    # K2#2: only the fail:* outcome blocks validity. pass:/not_checked: do not.
+    if s8.startswith("fail"):
+        valid = False
 
     result = {
         "verdict": "valid" if valid else "invalid",
@@ -491,9 +590,17 @@ def walk(
             "step6_refutation_targets": s6,
             "step6b_challenge_outcomes": s6b,
             "step7_coverage_assessment": s7,
+            "step8_transparency": s8,
         },
         # K2#1: explicit authenticity provenance for the verdict.
         "trust_basis": "pinned" if trust_anchor is not None else "in-band",
+        # K2#2: explicit transparency provenance for the verdict.
+        "transparency_basis": (
+            "verified" if s8.startswith("pass")
+            else "required-absent" if s8.startswith("fail") and "absent" in s8
+            else "failed" if s8.startswith("fail")
+            else "not-checked"
+        ),
     }
     if trust_anchor is None:
         result["trust_warning"] = TRUST_WARNING
@@ -517,6 +624,19 @@ def main(argv: list[str] | None = None) -> int:
         help="Path to a JSON trust store mapping issuer/url -> fingerprint "
              "(takes precedence over --trust-anchor).",
     )
+    parser.add_argument(
+        "--require-transparency",
+        action="store_true",
+        help="K2#2: require a verifiable Rekor inclusion proof. Fails closed if "
+             "absent; fails if the proof does not verify against the attestation.",
+    )
+    parser.add_argument(
+        "--log-public-key",
+        type=Path,
+        metavar="PATH",
+        help="K2#2: PEM file of the transparency log's public key, used to "
+             "verify the SET / checkpoint signature when present.",
+    )
     ns = parser.parse_args(argv)
     attestation = json.loads(ns.path.read_text())
     trust_anchor: str | dict[str, str] | None = None
@@ -525,7 +645,15 @@ def main(argv: list[str] | None = None) -> int:
         trust_anchor = load_trust_store(ns.trust_store)
     elif ns.trust_anchor is not None:
         trust_anchor = ns.trust_anchor
-    result = walk(attestation, trust_anchor=trust_anchor)
+    log_pem: bytes | None = None
+    if ns.log_public_key is not None:
+        log_pem = ns.log_public_key.read_bytes()
+    result = walk(
+        attestation,
+        trust_anchor=trust_anchor,
+        require_transparency=ns.require_transparency,
+        log_public_key_pem=log_pem,
+    )
     if ns.quiet:
         print(result["verdict"])
     else:
