@@ -26,6 +26,30 @@ from . import adversarial, consistency, counter_evidence, coverage, replay
 from .lm import LMAdapter, _LANGFUSE_AVAILABLE, _lf_ctx
 
 
+class RefutationFailedError(Exception):
+    """AUDIT-FIX (R1): raised when a challenge consensus is FAILED (the claim
+    was refuted) and the harness was not permitted to remove the claim.
+
+    A FAILED outcome means an adversary majority concluded the claim is
+    contradicted by its own sources. Per adversarial.py's documented contract
+    ("if consensus is `failed`, the upstream claim is removed or revised") a
+    refuted claim must NEVER seal as valid. When auto-removal is disabled the
+    harness raises this rather than silently emitting a Refutation block that a
+    naive caller would seal — closing the hole where a false claim sealed
+    `valid` because the FAILED outcome was simply ignored.
+    """
+
+    def __init__(self, failed: list[tuple[str, str]]) -> None:
+        self.failed = failed  # list of (claim_id, challenge_id)
+        detail = ", ".join(f"{cid} (challenge {chid})" for cid, chid in failed)
+        super().__init__(
+            "refutation produced FAILED challenge outcome(s) for claim(s) "
+            f"that were not removed or revised: {detail}. These claims MUST NOT "
+            "seal as valid (R1). Re-run with remove_failed_claims=True to drop "
+            "them, or revise the claims and re-run."
+        )
+
+
 def _gen_id(prefix: str = "") -> str:
     try:
         import ulid
@@ -70,6 +94,7 @@ def run_harness(
     replay_model: Optional[LMAdapter] = None,
     backend: str = "native",
     langfuse_session_id: Optional[str] = None,
+    remove_failed_claims: bool = False,
 ) -> dict:
     """Run all five challenges against an Attestation; return a Refutation block.
 
@@ -81,10 +106,23 @@ def run_harness(
         registry_lookup: Callable returning prior claims for an entity.
         search: Search callable for counter-evidence.
         replay_prompt / replay_model: Inputs for the replay challenge.
+        remove_failed_claims: AUDIT-FIX (R1). When True, any claim whose
+            challenge consensus is FAILED is removed from the attestation's
+            findings (and challenges targeting only-removed claims are dropped),
+            implementing the "claim removed" branch of the documented contract.
+            When False (default), a FAILED outcome for a claim that is not
+            otherwise revised raises RefutationFailedError rather than letting
+            the caller seal a refuted claim as valid.
 
     Returns:
         Refutation block dict suitable for assignment to attestation['refutation']
         before sealing.
+
+    Raises:
+        RefutationFailedError: if a challenge consensus is FAILED and
+            remove_failed_claims is False. CONTESTED outcomes do not raise —
+            they are retained with a disagreement gap per the paper — but the
+            verifier (walk.py) treats an unresolved CONTESTED as not-valid too.
     """
     # Langfuse session binding (no-op when Langfuse not installed)
     if langfuse_session_id and _LANGFUSE_AVAILABLE and _lf_ctx:
@@ -227,8 +265,12 @@ def run_harness(
     # Coverage audit always declines at the per-attestation level.
     declined.append({"type": ChallengeType.COVERAGE_AUDIT.value, "reason": coverage.REASON_BATCH_LEVEL})
 
-    # If contested or revised outcomes appeared, propagate to claim gaps.
-    _propagate_outcomes(attestation, challenges)
+    # If failed/contested/revised outcomes appeared, propagate to claim gaps.
+    # AUDIT-FIX (R1): FAILED outcomes either remove the claim or raise — a
+    # refuted claim must never silently pass through to sealing.
+    challenges = _propagate_outcomes(
+        attestation, challenges, remove_failed_claims=remove_failed_claims
+    )
 
     # Ensure there's at least one challenge (R6).
     if not challenges:
@@ -253,12 +295,63 @@ def run_harness(
     }
 
 
-def _propagate_outcomes(attestation: dict, challenges: Iterable[dict]) -> None:
-    """Update claim gaps with information from contested/revised challenges."""
+def _propagate_outcomes(
+    attestation: dict,
+    challenges: list[dict],
+    *,
+    remove_failed_claims: bool = False,
+) -> list[dict]:
+    """Propagate challenge outcomes back onto the claims, enforcing R1.
+
+    AUDIT-FIX (R1): the previous version only acted on CONTESTED/REVISED and
+    silently ignored FAILED — a refuted claim sealed `valid`. This version:
+
+      * FAILED  ⇒ the claim was refuted. Either remove it (remove_failed_claims)
+                  or raise RefutationFailedError. It must NOT seal as valid.
+      * CONTESTED ⇒ retain the claim, append a tri-model disagreement gap (the
+                  verifier still treats unresolved CONTESTED as not-valid).
+      * REVISED ⇒ retain the claim, append a revision gap.
+      * ERROR   ⇒ inconclusive (R2). Does not block sealing, but is recorded
+                  honestly as a gap so it is never laundered into 'survived'.
+
+    Returns the (possibly filtered) list of challenges. When a claim is removed,
+    challenges that target ONLY removed claims are dropped so the Refutation
+    block stays internally consistent; challenges with a mix of removed and
+    surviving targets keep only their surviving targets.
+    """
     claims_by_id = {c["claim_id"]: c for c in attestation.get("findings", {}).get("claims", [])}
+
+    failed_targets: list[tuple[str, str]] = []  # (claim_id, challenge_id)
+    for ch in challenges:
+        if ch.get("outcome") == ChallengeOutcome.FAILED.value:
+            for tid in ch.get("targets", []):
+                if tid in claims_by_id:
+                    failed_targets.append((tid, ch.get("challenge_id", "?")))
+
+    if failed_targets and not remove_failed_claims:
+        # Refuted claim with no remediation path ⇒ block sealing.
+        raise RefutationFailedError(failed_targets)
+
+    removed_ids: set[str] = set()
+    if failed_targets and remove_failed_claims:
+        removed_ids = {cid for cid, _ in failed_targets}
+        claims = attestation.get("findings", {}).get("claims", [])
+        attestation["findings"]["claims"] = [
+            c for c in claims if c["claim_id"] not in removed_ids
+        ]
+        # Re-resolve the surviving claims map.
+        claims_by_id = {
+            c["claim_id"]: c for c in attestation["findings"]["claims"]
+        }
+
+    # Gap propagation for surviving claims.
     for ch in challenges:
         outcome = ch.get("outcome")
-        if outcome not in (ChallengeOutcome.CONTESTED.value, ChallengeOutcome.REVISED.value):
+        if outcome not in (
+            ChallengeOutcome.CONTESTED.value,
+            ChallengeOutcome.REVISED.value,
+            ChallengeOutcome.ERROR.value,
+        ):
             continue
         for tid in ch.get("targets", []):
             claim = claims_by_id.get(tid)
@@ -271,7 +364,28 @@ def _propagate_outcomes(attestation: dict, challenges: Iterable[dict]) -> None:
             elif outcome == ChallengeOutcome.REVISED.value:
                 ch_type = ch.get("type", "challenge")
                 gaps.append(f"{ch_type}_revision: see challenge {ch.get('challenge_id')}")
+            else:  # ERROR — AUDIT-FIX (R2): record inconclusive honestly.
+                ch_type = ch.get("type", "challenge")
+                gaps.append(
+                    f"{ch_type}_inconclusive: challenge {ch.get('challenge_id')} "
+                    "could not be executed (recorded as error, not survived)"
+                )
             claim["gaps"] = gaps
+
+    if not removed_ids:
+        return challenges
+
+    # Rebuild challenges list, pruning targets that point at removed claims.
+    surviving_ids = set(claims_by_id)
+    pruned: list[dict] = []
+    for ch in challenges:
+        targets = [t for t in ch.get("targets", []) if t in surviving_ids]
+        if not targets:
+            continue  # challenge only referenced removed claims; drop it.
+        new_ch = dict(ch)
+        new_ch["targets"] = targets
+        pruned.append(new_ch)
+    return pruned
 
 
 def _dedup_declines(declined: list[dict]) -> list[dict]:

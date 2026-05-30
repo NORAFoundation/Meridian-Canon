@@ -101,3 +101,38 @@ def test_pae_distinguishes_type_and_payload():
     c = signing._pae("type/a", b"different")
     assert a != b
     assert a != c
+
+
+def test_pae_matches_spec_known_good_vector():
+    """AUDIT-FIX (K1): cross-language conformance fixture.
+
+    These byte strings were computed BY HAND from the DSSE spec PAE rule:
+        PAE = "DSSEv1" SP LEN(type) SP type SP LEN(body) SP body
+    NOT by round-tripping our own implementation. Any conformant DSSE
+    verifier in any language (Go in-toto, sigstore, etc.) must produce the
+    same bytes for these inputs. If _pae regresses to a non-spec encoding,
+    these literal assertions fail.
+    """
+    # Canonical DSSE spec example: type "http://example.com/HelloWorld",
+    # payload b"hello world" (29-byte type, 11-byte payload).
+    assert signing._pae("http://example.com/HelloWorld", b"hello world") == (
+        b"DSSEv1 29 http://example.com/HelloWorld 11 hello world"
+    )
+    # Minimal hand-checkable vector: 1-byte type "a", 2-byte payload "bc".
+    assert signing._pae("a", b"bc") == b"DSSEv1 1 a 2 bc"
+    # Empty payload: still SP-separated, length 0, trailing SP then nothing.
+    assert signing._pae("t", b"") == b"DSSEv1 1 t 0 "
+
+
+def test_pae_is_not_legacy_nonconformant_encoding():
+    """AUDIT-FIX (K1): guard against regression to the old broken format.
+
+    The pre-fix encoding began with b"DSSEv1\\n" and used little-endian
+    uint64 lengths. The spec encoding begins with b"DSSEv1 " (space) and
+    uses ASCII-decimal lengths. Assert we are NOT emitting the legacy form.
+    """
+    out = signing._pae("text/plain", b"hello")
+    assert out.startswith(b"DSSEv1 ")
+    assert not out.startswith(b"DSSEv1\n")
+    # No NUL bytes from little-endian uint64 length padding.
+    assert b"\x00" not in out

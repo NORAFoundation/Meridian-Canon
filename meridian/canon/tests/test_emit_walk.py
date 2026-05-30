@@ -103,3 +103,62 @@ def test_canonicalization_byte_identical_roundtrip(
     parsed = json.loads(s)
     canonical = canonicalize_for_seal(parsed)
     assert "sha256:" + hashlib.sha256(canonical).hexdigest() == sealed["seal"]["chain_hash"]
+
+
+# --- AUDIT-FIX (R3): verifier must reject unresolved failed/contested --------
+
+
+def _force_challenge_outcome(att: dict, outcome: str) -> None:
+    """Overwrite the first refutation challenge's outcome in place."""
+    att["refutation"]["challenges"][0]["outcome"] = outcome
+
+
+def test_walk_rejects_sealed_attestation_with_failed_challenge(
+    sample_attestation_dict: dict, published_keypair: tuple[str, str]
+) -> None:
+    """R3: if a sealed attestation's refutation records a FAILED challenge
+    outcome, the third-party verifier must return invalid — even though the
+    signature, chain_hash, and supports all verify. Previously walk() ignored
+    challenge outcomes entirely and would have returned valid."""
+    fingerprint, url = published_keypair
+    att = _add_inline_content(copy.deepcopy(sample_attestation_dict))
+    _force_challenge_outcome(att, "failed")
+    sealed = emit.emit(att, custodian=CUSTODIAN, public_key_url=url, fingerprint=fingerprint)
+
+    result = walk.walk(sealed)
+    assert result["verdict"] == "invalid", result
+    assert "fail" in result["steps"]["step6b_challenge_outcomes"]
+    # The other binary steps still pass — this is purely the refutation check.
+    assert result["steps"]["step2_signature_verify"] == "pass"
+    assert result["steps"]["step3_chain_hash_recompute"] == "pass"
+
+
+def test_walk_rejects_sealed_attestation_with_contested_challenge(
+    sample_attestation_dict: dict, published_keypair: tuple[str, str]
+) -> None:
+    """R3: an unresolved CONTESTED (tri-model disagreement) outcome also fails
+    the verifier closed."""
+    fingerprint, url = published_keypair
+    att = _add_inline_content(copy.deepcopy(sample_attestation_dict))
+    _force_challenge_outcome(att, "contested")
+    sealed = emit.emit(att, custodian=CUSTODIAN, public_key_url=url, fingerprint=fingerprint)
+
+    result = walk.walk(sealed)
+    assert result["verdict"] == "invalid", result
+    assert "fail" in result["steps"]["step6b_challenge_outcomes"]
+
+
+def test_walk_accepts_error_challenge_outcome(
+    sample_attestation_dict: dict, published_keypair: tuple[str, str]
+) -> None:
+    """R2/R3: an ERROR (inconclusive) outcome does NOT fail validity — the
+    challenge simply could not run — but it is still recorded honestly. It must
+    not be confused with a refutation."""
+    fingerprint, url = published_keypair
+    att = _add_inline_content(copy.deepcopy(sample_attestation_dict))
+    _force_challenge_outcome(att, "error")
+    sealed = emit.emit(att, custodian=CUSTODIAN, public_key_url=url, fingerprint=fingerprint)
+
+    result = walk.walk(sealed)
+    assert result["verdict"] == "valid", result
+    assert result["steps"]["step6b_challenge_outcomes"] == "pass"

@@ -30,7 +30,21 @@ CANON_VERSION_SUPPORTED = {"0.1.0", "0.1.1", "0.2.0"}
 
 
 def _step1_public_key_fetch(seal: dict[str, Any]) -> tuple[str, bytes | None]:
-    """Fetch PEM from public_key_url and verify SHA-256 fingerprint matches public_key_fingerprint."""
+    """Fetch PEM from public_key_url and verify SHA-256 fingerprint matches public_key_fingerprint.
+
+    # AUDIT-TODO (K2 — DEFERRED, do not implement here): trust-anchor gap.
+    # This step proves the fetched PEM hashes to the *self-declared*
+    # public_key_fingerprint in the seal. It does NOT establish that the key
+    # belongs to a trusted issuer — an attacker who controls public_key_url can
+    # publish their own key and a matching fingerprint, producing an internally
+    # consistent but unauthenticated attestation. A real trust anchor requires
+    # OUT-OF-BAND fingerprint pinning: the verifier must compare the seal's
+    # fingerprint against a pinned set of issuer fingerprints obtained through a
+    # channel independent of public_key_url (a checked-in allowlist, a CT-style
+    # transparency log, or a CA-issued cert chain). That is a larger redesign
+    # (key-distribution + revocation + rotation policy) and is intentionally NOT
+    # built here. Until then, walk() verifies INTEGRITY, not AUTHENTICITY.
+    """
     url = seal["public_key_url"]
     declared = seal["public_key_fingerprint"]
     try:
@@ -123,6 +137,51 @@ def _step6_refutation_targets(attestation: dict[str, Any]) -> str:
     return "pass"
 
 
+def _step6b_challenge_outcomes(attestation: dict[str, Any]) -> str:
+    """AUDIT-FIX (R3): a sealed Attestation MUST NOT carry an unresolved
+    FAILED (refuted) or CONTESTED (tri-model disagreement) challenge outcome.
+
+    Previously the verifier excluded the refutation block's *outcomes* from
+    the validity verdict entirely — it only checked that challenge *targets*
+    resolved (step 6). That meant an attestation whose own refutation recorded
+    that a claim FAILED could still walk to `valid`, exactly the silent-seal
+    hole. This step makes the third-party verifier actually check what the
+    refutation recorded.
+
+    Semantics (coordinated with the harness):
+      * FAILED    ⇒ the claim was refuted; it must have been removed or revised
+                    before sealing. Its presence here means the seal is unsound.
+      * CONTESTED ⇒ unresolved tri-model disagreement; not cleared. The claim
+                    may only seal if it carried a disagreement gap AND the
+                    issuer chose to retain it — but a verifier cannot treat an
+                    open contest as 'valid' without the recipient's judgment,
+                    so we fail closed.
+      * ERROR     ⇒ inconclusive (R2). Does NOT fail validity (the challenge
+                    simply could not run), but is surfaced informationally.
+
+    Returns "pass" or a "fail: ..." string.
+    """
+    offending: list[str] = []
+    for ch in attestation.get("refutation", {}).get("challenges", []):
+        # Prefer consensus_outcome when present (tri-model), else outcome.
+        outcome = ch.get("consensus_outcome") or ch.get("outcome")
+        if outcome == "failed":
+            offending.append(
+                f"{ch.get('challenge_id')} (FAILED targets {ch.get('targets')})"
+            )
+        elif outcome == "contested":
+            offending.append(
+                f"{ch.get('challenge_id')} (CONTESTED targets {ch.get('targets')})"
+            )
+    if offending:
+        return (
+            "fail: sealed attestation carries unresolved refuted/contested "
+            f"challenge outcome(s): {'; '.join(offending)} — a refuted claim "
+            "must not seal as valid (R3)"
+        )
+    return "pass"
+
+
 def _step7_coverage_assessment(attestation: dict[str, Any]) -> str:
     """Informational only (paper §8.3): surfaces declined-challenge inventory.
 
@@ -203,9 +262,10 @@ def walk_dsse(envelope: dict[str, Any]) -> dict[str, Any]:
     s4 = _step4_witness_content_hashes(inner)
     s5 = _step5_supports_resolution(inner)
     s6 = _step6_refutation_targets(inner)
+    s6b = _step6b_challenge_outcomes(inner)  # AUDIT-FIX (R3)
     s7 = _step7_coverage_assessment(inner)
 
-    binary_steps = [s1, s2, s3, s5, s6]
+    binary_steps = [s1, s2, s3, s5, s6, s6b]
     valid = all(s == "pass" for s in binary_steps) and s4["failed"] == 0
 
     return {
@@ -219,6 +279,7 @@ def walk_dsse(envelope: dict[str, Any]) -> dict[str, Any]:
             "step4_witness_content_hashes": s4,
             "step5_supports_resolution": s5,
             "step6_refutation_targets": s6,
+            "step6b_challenge_outcomes": s6b,
             "step7_coverage_assessment": s7,
         },
     }
@@ -256,9 +317,10 @@ def walk(attestation: dict[str, Any]) -> dict[str, Any]:
     s4 = _step4_witness_content_hashes(attestation)
     s5 = _step5_supports_resolution(attestation)
     s6 = _step6_refutation_targets(attestation)
+    s6b = _step6b_challenge_outcomes(attestation)  # AUDIT-FIX (R3)
     s7 = _step7_coverage_assessment(attestation)
 
-    binary_steps = [s1_msg, s2, s3, s5, s6]
+    binary_steps = [s1_msg, s2, s3, s5, s6, s6b]
     valid = all(s == "pass" for s in binary_steps) and s4["failed"] == 0
 
     return {
@@ -272,6 +334,7 @@ def walk(attestation: dict[str, Any]) -> dict[str, Any]:
             "step4_witness_content_hashes": s4,
             "step5_supports_resolution": s5,
             "step6_refutation_targets": s6,
+            "step6b_challenge_outcomes": s6b,
             "step7_coverage_assessment": s7,
         },
     }

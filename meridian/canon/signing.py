@@ -109,15 +109,30 @@ def verify(public_key: Ed25519PublicKey, chain_hash: str, signature_b64: str) ->
 
 
 def _pae(payload_type: str, payload: bytes) -> bytes:
-    """DSSE Pre-Authentication Encoding.
+    """DSSE Pre-Authentication Encoding (per the DSSE spec).
 
-    PAE = "DSSEv1\n" + enc(payloadType) + "\n" + enc(payload)
-    where enc(b) = uint64_le(len(b)) + b
+    PAE(type, body) = "DSSEv1" SP LEN(type) SP type SP LEN(body) SP body
+    where SP is a single ASCII space (0x20), LEN(x) is the ASCII-decimal
+    byte length of x, and type/body are appended as raw bytes.
+
+    Reference: https://github.com/secure-systems-lab/dsse/blob/master/protocol.md
+
+    # AUDIT-FIX (K1): the previous implementation used a non-conformant
+    # encoding ("DSSEv1\n" + uint64_le(len) + ...). That format is not the
+    # DSSE PAE and is not interoperable with any conformant DSSE verifier
+    # (in-toto, sigstore, etc.), so a signature produced here could never be
+    # checked cross-language — silently defeating the whole point of using
+    # DSSE. Replaced with the spec's SP-separated, ASCII-decimal-length
+    # encoding. See test_dsse.py::test_pae_matches_spec_known_good_vector for
+    # a hand-computed cross-language fixture proving conformance.
     """
-    def enc(b: bytes) -> bytes:
-        return len(b).to_bytes(8, "little") + b
-
-    return b"DSSEv1\n" + enc(payload_type.encode("utf-8")) + b"\n" + enc(payload)
+    type_bytes = payload_type.encode("utf-8")
+    return b"DSSEv1 %d %s %d %s" % (
+        len(type_bytes),
+        type_bytes,
+        len(payload),
+        payload,
+    )
 
 
 def sign_dsse(

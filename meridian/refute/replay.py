@@ -48,10 +48,12 @@ def replay(
     Returns a partial Challenge dict.
     """
     if prompt is None or model is None:
+        # AUDIT-FIX (R2): cannot replay without prompt+model ⇒ ERROR
+        # (inconclusive), not SURVIVED. The harness declines on decline_reason.
         return {
             "type": "replay",
             "input": "no prompt or model available; replay deferred",
-            "outcome": ChallengeOutcome.SURVIVED.value,
+            "outcome": ChallengeOutcome.ERROR.value,
             "revisions": None,
             "decline_reason": (
                 "original_prompt_unavailable" if prompt is None else "no_replay_model_configured"
@@ -62,18 +64,20 @@ def replay(
         try:
             runs.append(model.complete(prompt, max_tokens=max_tokens, temperature=0.0))
         except Exception as e:
+            # AUDIT-FIX (R2): a replay run threw ⇒ inconclusive, not survived.
             return {
                 "type": "replay",
                 "input": f"replay run failed: {e}",
-                "outcome": ChallengeOutcome.SURVIVED.value,
+                "outcome": ChallengeOutcome.ERROR.value,
                 "revisions": None,
                 "decline_reason": f"replay_run_error_{type(e).__name__}",
             }
     if not runs:
+        # AUDIT-FIX (R2): zero successful runs ⇒ inconclusive, not survived.
         return {
             "type": "replay",
             "input": "no successful replay runs produced",
-            "outcome": ChallengeOutcome.SURVIVED.value,
+            "outcome": ChallengeOutcome.ERROR.value,
             "revisions": None,
             "decline_reason": "no_replay_runs",
         }
