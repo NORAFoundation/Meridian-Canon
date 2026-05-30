@@ -28,12 +28,23 @@ def sealed_attestation(context, brief_attestation: dict, canon=None) -> dict:
         # No canon resource — return brief unsealed (for testing/dev)
         return brief_attestation
 
+    from meridian.canon.emit import emit
+    custodian = getattr(canon, "custodian", "meridian-pipeline")
+    public_key_url = getattr(canon, "public_key_url", "https://norafoundation.io/canon/key.pem")
+    strict = getattr(canon, "strict_sealing", True)
+
+    # AUDIT-FIX (P1 seal swallows failures): never return an UNSIGNED attestation
+    # downstream while pretending the run succeeded. Under strict sealing (the
+    # default) any signing failure propagates so Dagster marks the run failed.
+    # Graceful degradation is opt-in only via the canon resource's
+    # strict_sealing=False, and even then the failure is annotated, not hidden.
+    if strict:
+        return emit(brief_attestation, custodian=custodian, public_key_url=public_key_url)
+
     try:
-        from meridian.canon.emit import emit
-        custodian = getattr(canon, "custodian", "meridian-pipeline")
-        public_key_url = getattr(canon, "public_key_url", "https://norafoundation.io/canon/key.pem")
         return emit(brief_attestation, custodian=custodian, public_key_url=public_key_url)
     except Exception as e:
-        # Log error but don't fail the pipeline; return brief with error annotation
+        if context is not None and hasattr(context, "log"):
+            context.log.error("Sealing failed (strict_sealing disabled): %s", e)
         brief_attestation["_seal_error"] = str(e)
         return brief_attestation
