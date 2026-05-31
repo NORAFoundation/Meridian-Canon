@@ -28,34 +28,146 @@ from .hashing import sha256_hex
 
 CANON_VERSION_SUPPORTED = {"0.1.0", "0.1.1", "0.2.0"}
 
+# AUDIT-FIX (K2#1): out-of-band pinned trust is now AVAILABLE via the
+# `trust_anchor` parameter on walk()/walk_dsse(). When a trust_anchor is
+# supplied, step 1 compares the fetched key's fingerprint against the
+# OUT-OF-BAND pinned value (string or {issuer_or_url: fingerprint} map),
+# defeating the URL-substitution forgery in which an attacker controls
+# public_key_url and writes a self-consistent in-band fingerprint. When no
+# trust_anchor is supplied, step 1 falls back to the in-band fingerprint and
+# the verdict carries an explicit `trust_warning` flag so callers cannot
+# mistake INTEGRITY for AUTHENTICITY.
+#
+# AUDIT-FIX (K2#2): transparency-log-backed verification is now AVAILABLE via
+# the `require_transparency` flag (+ optional `log_public_key_pem`) on
+# walk()/walk_dsse(). When enabled and the attestation carries a Rekor
+# inclusion proof, the verifier recomputes the RFC 6962 Merkle root OFFLINE
+# from the stored proof bundle and the attestation's own canonical bytes — a
+# FAILED inclusion ⇒ valid=False. When enabled but NO proof is present, the
+# verifier fails closed ("transparency required but absent"). When disabled,
+# behavior is unchanged but the verdict notes transparency was not checked.
+# Verification is purely cryptographic (no network) and operates on the stored
+# proof bundle, so offline verification still works.
+#
+# AUDIT-TODO (K2 — REMAINING, K2#3, not built here):
+#   K2#3 — full key transparency: CT-style monitored log of issuer keys with
+#          rotation + revocation semantics, so pinning can be replaced by a
+#          monitored gossiped log rather than a static checked-in allowlist.
+#          K2#2 gives append-only inclusion of *entries*; K2#3 gives
+#          append-only transparency of *keys*.
+# Without a pin (K2#1) AND without a transparency proof (K2#2), walk() verifies
+# INTEGRITY, not AUTHENTICITY.
 
-def _step1_public_key_fetch(seal: dict[str, Any]) -> tuple[str, bytes | None]:
-    """Fetch PEM from public_key_url and verify SHA-256 fingerprint matches public_key_fingerprint.
+# Machine-readable flag emitted when no out-of-band trust anchor is provided.
+TRUST_WARNING = (
+    "key trust is in-band only — issuer self-certified; "
+    "provide trust_anchor to verify authenticity"
+)
 
-    # AUDIT-TODO (K2 — DEFERRED, do not implement here): trust-anchor gap.
-    # This step proves the fetched PEM hashes to the *self-declared*
-    # public_key_fingerprint in the seal. It does NOT establish that the key
-    # belongs to a trusted issuer — an attacker who controls public_key_url can
-    # publish their own key and a matching fingerprint, producing an internally
-    # consistent but unauthenticated attestation. A real trust anchor requires
-    # OUT-OF-BAND fingerprint pinning: the verifier must compare the seal's
-    # fingerprint against a pinned set of issuer fingerprints obtained through a
-    # channel independent of public_key_url (a checked-in allowlist, a CT-style
-    # transparency log, or a CA-issued cert chain). That is a larger redesign
-    # (key-distribution + revocation + rotation policy) and is intentionally NOT
-    # built here. Until then, walk() verifies INTEGRITY, not AUTHENTICITY.
+
+def _resolve_trust_anchor(
+    trust_anchor: str | dict[str, str] | None,
+    *,
+    issuer: str | None,
+    url: str | None,
+) -> str | None:
+    """Resolve the OUT-OF-BAND expected fingerprint for this attestation.
+
+    `trust_anchor` is either:
+      * a fingerprint string  -> the pinned value applies directly, or
+      * a mapping {issuer_id_or_url: fingerprint} -> look up by the
+        attestation's public_key_url first, then its issuer id.
+
+    Returns the pinned fingerprint string, or None if no anchor was supplied
+    or the mapping has no entry for this issuer/url (caller treats a supplied
+    mapping with no match as "not trusted").
+    """
+    if trust_anchor is None:
+        return None
+    if isinstance(trust_anchor, str):
+        return trust_anchor
+    # mapping form: prefer URL match, fall back to issuer id.
+    if url is not None and url in trust_anchor:
+        return trust_anchor[url]
+    if issuer is not None and issuer in trust_anchor:
+        return trust_anchor[issuer]
+    return None
+
+
+def _fetch_pem(url: str) -> bytes:
+    """Fetch raw PEM bytes from a public_key_url (supports file:// for tests)."""
+    if url.startswith("file://"):
+        return Path(url.removeprefix("file://")).read_bytes()
+    with urlopen(url, timeout=10) as resp:
+        return resp.read()
+
+
+def _check_pinned_fingerprint(
+    actual: str,
+    trust_anchor: str | dict[str, str] | None,
+    *,
+    issuer: str | None,
+    url: str | None,
+) -> str | None:
+    """Compare a fetched key's fingerprint against the out-of-band pin.
+
+    Returns None when the key is trusted (or no anchor is in effect for this
+    issuer in the string case), or a "fail: step1_key_not_trusted: ..." reason
+    string when a pin is in effect and does not match.
+
+    Note: when a *mapping* trust_anchor is supplied but contains no entry for
+    this issuer/url, the key is NOT trusted (fail closed) — the operator
+    supplied a trust store and this issuer is simply not in it.
+    """
+    if trust_anchor is None:
+        return None
+    expected = _resolve_trust_anchor(trust_anchor, issuer=issuer, url=url)
+    if expected is None:
+        # A mapping was supplied but has no pin for this issuer/url: fail closed.
+        return (
+            "fail: step1_key_not_trusted: no pinned fingerprint for issuer "
+            f"{issuer!r} / url {url!r} in supplied trust store"
+        )
+    if actual != expected:
+        return (
+            f"fail: step1_key_not_trusted: fetched key fingerprint {actual} "
+            f"does not match pinned {expected}"
+        )
+    return None
+
+
+def _step1_public_key_fetch(
+    seal: dict[str, Any],
+    *,
+    trust_anchor: str | dict[str, str] | None = None,
+    issuer: str | None = None,
+) -> tuple[str, bytes | None]:
+    """Fetch PEM from public_key_url and verify its SHA-256 fingerprint.
+
+    When `trust_anchor` is provided, the fetched key's fingerprint is compared
+    against the OUT-OF-BAND pinned value (K2#1) — NOT the in-band
+    `public_key_fingerprint` the issuer wrote into the seal. This defeats the
+    URL-substitution forgery. When `trust_anchor` is None, the in-band
+    fingerprint is used (integrity only); the caller attaches `trust_warning`.
     """
     url = seal["public_key_url"]
     declared = seal["public_key_fingerprint"]
     try:
-        if url.startswith("file://"):
-            pem = Path(url.removeprefix("file://")).read_bytes()
-        else:
-            with urlopen(url, timeout=10) as resp:
-                pem = resp.read()
+        pem = _fetch_pem(url)
     except Exception as e:
         return f"fail: cannot fetch {url}: {e}", None
     actual = f"sha256:{sha256_hex(pem)}"
+
+    if trust_anchor is not None:
+        # Out-of-band pinned trust: compare against the pin, not the in-band value.
+        reason = _check_pinned_fingerprint(
+            actual, trust_anchor, issuer=issuer, url=url
+        )
+        if reason is not None:
+            return reason, None
+        return "pass", pem
+
+    # No anchor: in-band self-certification only (INTEGRITY, not AUTHENTICITY).
     if actual != declared:
         return f"fail: fingerprint mismatch (got {actual}, expected {declared})", None
     return "pass", pem
@@ -193,8 +305,64 @@ def _step7_coverage_assessment(attestation: dict[str, Any]) -> str:
     return f"informational: {len(declined)} declined challenge type(s)"
 
 
-def walk_dsse(envelope: dict[str, Any]) -> dict[str, Any]:
-    """Walk a v0.2.0 DSSE envelope. Returns a verdict dict (same shape as walk())."""
+def _step_transparency(
+    attestation_for_canonical: dict[str, Any],
+    proof_carrier: dict[str, Any],
+    *,
+    require_transparency: bool,
+    log_public_key_pem: bytes | None = None,
+) -> str:
+    """K2#2: verify the Rekor inclusion proof OFFLINE against the attestation.
+
+    `attestation_for_canonical` is the dict whose rfc8785 canonical bytes (seal
+    excluded) were committed to the log — i.e. the inline attestation, or the
+    decoded inner attestation of a DSSE envelope. `proof_carrier` is the object
+    that may carry the stored `transparency` proof block (same dict for inline;
+    for DSSE either the envelope or the inner attestation may carry it).
+
+    Returns:
+      * "not_checked: ..."   when require_transparency is False (informational).
+      * "pass: ..."          when a proof is present and inclusion verifies.
+      * "fail: ..."          when required-but-absent, or inclusion FAILS.
+    """
+    from . import transparency as _t
+
+    proof = _t.extract_rekor_proof(proof_carrier)
+    if proof is None and proof_carrier is not attestation_for_canonical:
+        # DSSE: the proof may live on the inner attestation instead of envelope.
+        proof = _t.extract_rekor_proof(attestation_for_canonical)
+
+    if proof is None:
+        if require_transparency:
+            return (
+                "fail: transparency required but absent — no Rekor inclusion "
+                "proof found on the attestation (fail closed per require_transparency)"
+            )
+        return "not_checked: transparency not required and no proof present"
+
+    entry_bytes = _t.canonical_entry_bytes(attestation_for_canonical)
+    result = _t.verify_entry_bundle(
+        entry_bytes, proof, log_public_key_pem=log_public_key_pem
+    )
+    if result.verified:
+        return f"pass: {result.reason}"
+    return f"fail: transparency inclusion check failed: {result.reason}"
+
+
+def walk_dsse(
+    envelope: dict[str, Any],
+    *,
+    trust_anchor: str | dict[str, str] | None = None,
+    require_transparency: bool = False,
+    log_public_key_pem: bytes | None = None,
+) -> dict[str, Any]:
+    """Walk a v0.2.0 DSSE envelope. Returns a verdict dict (same shape as walk()).
+
+    `trust_anchor` (K2#1): an OUT-OF-BAND pinned fingerprint string, or a
+    {issuer_or_url: fingerprint} mapping. When supplied, step 1 compares the
+    fetched key's fingerprint against the pin (NOT the in-band keyid), defeating
+    URL substitution. When omitted, the verdict carries `trust_warning`.
+    """
     import base64 as _base64
 
     from . import signing as _signing
@@ -213,24 +381,42 @@ def walk_dsse(envelope: dict[str, Any]) -> dict[str, Any]:
     keyid = sig_entry.get("keyid", "")
     url = sig_entry.get("public_key_url", "")
 
+    # Resolve the issuer id from the payload (for mapping-form trust anchors).
+    # Best-effort: the inner attestation is parsed below, but we need the issuer
+    # before the step-1 trust check, so peek at it here.
+    dsse_issuer: str | None = None
+    try:
+        _peek = json.loads(_base64.b64decode(envelope["payload"]))
+        if isinstance(_peek, dict):
+            dsse_issuer = _peek.get("issuer")
+    except Exception:
+        dsse_issuer = None
+
     # Step 1: public key fetch + fingerprint check
     try:
-        if url.startswith("file://"):
-            from pathlib import Path as _Path
-            pem = _Path(url.removeprefix("file://")).read_bytes()
-        else:
-            from urllib.request import urlopen as _urlopen
-            with _urlopen(url, timeout=10) as resp:
-                pem = resp.read()
+        pem = _fetch_pem(url)
     except Exception as e:
         return {"verdict": "invalid", "canon_version": "0.2.0", "attestation_id": None,
                 "steps": {"step1_public_key_fetch": f"fail: {e}"}}
 
     actual_fingerprint = f"sha256:{sha256_hex(pem)}"
-    if actual_fingerprint != keyid:
+
+    if trust_anchor is not None:
+        # Out-of-band pinned trust: compare against the pin, not the in-band keyid.
+        _reason = _check_pinned_fingerprint(
+            actual_fingerprint, trust_anchor, issuer=dsse_issuer, url=url
+        )
+        s1 = _reason if _reason is not None else "pass"
+        if _reason is not None:
+            pem = None  # type: ignore[assignment]
+    elif actual_fingerprint != keyid:
         s1 = f"fail: fingerprint mismatch (got {actual_fingerprint}, declared {keyid})"
     else:
         s1 = "pass"
+
+    if pem is None:
+        return {"verdict": "invalid", "canon_version": "0.2.0", "attestation_id": None,
+                "steps": {"step1_public_key_fetch": s1, "step2_dsse_signature": "fail: no public key"}}
 
     # Decode payload bytes
     try:
@@ -264,11 +450,21 @@ def walk_dsse(envelope: dict[str, Any]) -> dict[str, Any]:
     s6 = _step6_refutation_targets(inner)
     s6b = _step6b_challenge_outcomes(inner)  # AUDIT-FIX (R3)
     s7 = _step7_coverage_assessment(inner)
+    # K2#2: transparency-log inclusion. The committed bytes are the inner
+    # attestation's canonical bytes; the proof may ride on the envelope or inner.
+    s8 = _step_transparency(
+        inner, envelope,
+        require_transparency=require_transparency,
+        log_public_key_pem=log_public_key_pem,
+    )
 
     binary_steps = [s1, s2, s3, s5, s6, s6b]
     valid = all(s == "pass" for s in binary_steps) and s4["failed"] == 0
+    # K2#2: only the fail:* outcome blocks validity. pass:/not_checked: do not.
+    if s8.startswith("fail"):
+        valid = False
 
-    return {
+    result = {
         "verdict": "valid" if valid else "invalid",
         "canon_version": inner.get("canon_version", "0.2.0"),
         "attestation_id": inner.get("attestation_id"),
@@ -281,19 +477,66 @@ def walk_dsse(envelope: dict[str, Any]) -> dict[str, Any]:
             "step6_refutation_targets": s6,
             "step6b_challenge_outcomes": s6b,
             "step7_coverage_assessment": s7,
+            "step8_transparency": s8,
         },
+        # K2#1: explicit authenticity provenance for the verdict.
+        "trust_basis": "pinned" if trust_anchor is not None else "in-band",
+        # K2#2: explicit transparency provenance for the verdict.
+        "transparency_basis": (
+            "verified" if s8.startswith("pass")
+            else "required-absent" if s8.startswith("fail") and "absent" in s8
+            else "failed" if s8.startswith("fail")
+            else "not-checked"
+        ),
     }
+    if trust_anchor is None:
+        result["trust_warning"] = TRUST_WARNING
+    return result
 
 
-def walk(attestation: dict[str, Any]) -> dict[str, Any]:
+def walk(
+    attestation: dict[str, Any],
+    *,
+    trust_anchor: str | dict[str, str] | None = None,
+    require_transparency: bool = False,
+    log_public_key_pem: bytes | None = None,
+) -> dict[str, Any]:
     """Run the seven-step falsification protocol. Returns a verdict dict.
 
     Accepts both inline-seal (v0.1.x) Attestations and v0.2.0 DSSE envelopes.
     DSSE envelopes are detected by the presence of a top-level `payload` field.
+
+    Trust (K2#1):
+      `trust_anchor` is the OUT-OF-BAND authenticity anchor. It is EITHER:
+        * a fingerprint string (the issuer's pinned key SHA-256), OR
+        * a mapping {issuer_id_or_url: fingerprint} (a trust store; see
+          `keys.load_trust_store`).
+      When supplied, step 1 compares the FETCHED key's fingerprint against the
+      pinned value rather than the in-band `public_key_fingerprint`, defeating
+      the URL-substitution forgery (whoever controls public_key_url cannot serve
+      their own key and a matching in-band fingerprint to pass verification).
+      When omitted, behavior is unchanged BUT the result carries an explicit,
+      machine-readable `trust_warning` and `trust_basis: "in-band"` so callers
+      cannot mistake INTEGRITY for AUTHENTICITY.
+
+    Transparency (K2#2):
+      `require_transparency` (+ optional `log_public_key_pem`): when True and the
+      attestation carries a Rekor inclusion proof, step 8 recomputes the RFC 6962
+      Merkle root OFFLINE from the stored proof bundle and the attestation's own
+      canonical bytes; a FAILED inclusion ⇒ `valid=False`. When True but no proof
+      is present, the verifier FAILS CLOSED ("transparency required but absent").
+      When False, behavior is unchanged but the verdict's `step8_transparency` /
+      `transparency_basis` note that transparency was not checked. No network is
+      used — verification operates purely on the stored proof bundle.
     """
     # Dispatch: DSSE envelope vs inline-seal Attestation
     if "payload" in attestation and "payload_type" in attestation:
-        return walk_dsse(attestation)
+        return walk_dsse(
+            attestation,
+            trust_anchor=trust_anchor,
+            require_transparency=require_transparency,
+            log_public_key_pem=log_public_key_pem,
+        )
 
     if attestation.get("canon_version") not in CANON_VERSION_SUPPORTED:
         return {
@@ -311,7 +554,9 @@ def walk(attestation: dict[str, Any]) -> dict[str, Any]:
             "steps": {"step0_seal_present": "fail: no seal"},
         }
 
-    s1_msg, pem = _step1_public_key_fetch(seal)
+    s1_msg, pem = _step1_public_key_fetch(
+        seal, trust_anchor=trust_anchor, issuer=attestation.get("issuer")
+    )
     s2 = _step2_signature_verify(pem, seal) if pem else "fail: no public key"
     s3 = _step3_chain_hash_recompute(attestation)
     s4 = _step4_witness_content_hashes(attestation)
@@ -319,11 +564,20 @@ def walk(attestation: dict[str, Any]) -> dict[str, Any]:
     s6 = _step6_refutation_targets(attestation)
     s6b = _step6b_challenge_outcomes(attestation)  # AUDIT-FIX (R3)
     s7 = _step7_coverage_assessment(attestation)
+    # K2#2: transparency-log inclusion (inline: same dict carries proof + bytes).
+    s8 = _step_transparency(
+        attestation, attestation,
+        require_transparency=require_transparency,
+        log_public_key_pem=log_public_key_pem,
+    )
 
     binary_steps = [s1_msg, s2, s3, s5, s6, s6b]
     valid = all(s == "pass" for s in binary_steps) and s4["failed"] == 0
+    # K2#2: only the fail:* outcome blocks validity. pass:/not_checked: do not.
+    if s8.startswith("fail"):
+        valid = False
 
-    return {
+    result = {
         "verdict": "valid" if valid else "invalid",
         "canon_version": attestation["canon_version"],
         "attestation_id": attestation["attestation_id"],
@@ -336,17 +590,70 @@ def walk(attestation: dict[str, Any]) -> dict[str, Any]:
             "step6_refutation_targets": s6,
             "step6b_challenge_outcomes": s6b,
             "step7_coverage_assessment": s7,
+            "step8_transparency": s8,
         },
+        # K2#1: explicit authenticity provenance for the verdict.
+        "trust_basis": "pinned" if trust_anchor is not None else "in-band",
+        # K2#2: explicit transparency provenance for the verdict.
+        "transparency_basis": (
+            "verified" if s8.startswith("pass")
+            else "required-absent" if s8.startswith("fail") and "absent" in s8
+            else "failed" if s8.startswith("fail")
+            else "not-checked"
+        ),
     }
+    if trust_anchor is None:
+        result["trust_warning"] = TRUST_WARNING
+    return result
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="meridian.canon.walk")
     parser.add_argument("path", type=Path, help="Path to the Attestation JSON")
     parser.add_argument("--quiet", action="store_true", help="Print only the verdict line")
+    parser.add_argument(
+        "--trust-anchor",
+        metavar="FINGERPRINT",
+        help="Out-of-band pinned issuer key fingerprint (sha256:<hex>) for K2#1 "
+             "authenticity verification.",
+    )
+    parser.add_argument(
+        "--trust-store",
+        type=Path,
+        metavar="PATH",
+        help="Path to a JSON trust store mapping issuer/url -> fingerprint "
+             "(takes precedence over --trust-anchor).",
+    )
+    parser.add_argument(
+        "--require-transparency",
+        action="store_true",
+        help="K2#2: require a verifiable Rekor inclusion proof. Fails closed if "
+             "absent; fails if the proof does not verify against the attestation.",
+    )
+    parser.add_argument(
+        "--log-public-key",
+        type=Path,
+        metavar="PATH",
+        help="K2#2: PEM file of the transparency log's public key, used to "
+             "verify the SET / checkpoint signature when present.",
+    )
     ns = parser.parse_args(argv)
     attestation = json.loads(ns.path.read_text())
-    result = walk(attestation)
+    trust_anchor: str | dict[str, str] | None = None
+    if ns.trust_store is not None:
+        from .keys import load_trust_store
+        trust_anchor = load_trust_store(ns.trust_store)
+    elif ns.trust_anchor is not None:
+        trust_anchor = ns.trust_anchor
+    log_pem: bytes | None = None
+    if ns.log_public_key is not None:
+        log_pem = ns.log_public_key.read_bytes()
+    result = walk(
+        attestation,
+        trust_anchor=trust_anchor,
+        require_transparency=ns.require_transparency,
+        log_public_key_pem=log_pem,
+    )
     if ns.quiet:
         print(result["verdict"])
     else:

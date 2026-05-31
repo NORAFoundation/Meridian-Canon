@@ -23,6 +23,7 @@ Usage:
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
@@ -83,6 +84,67 @@ def load_public_pem(fingerprint: str) -> bytes:
     if not pem_path.exists():
         raise FileNotFoundError(f"No PEM for fingerprint {fingerprint} at {pem_path}")
     return pem_path.read_bytes()
+
+
+def load_trust_store(path: str | os.PathLike[str]) -> dict[str, str]:
+    """Load an out-of-band trust store mapping issuer -> pinned key fingerprint.
+
+    AUDIT-FIX (K2#1): the trust store is the verifier's OUT-OF-BAND anchor.
+    It is obtained through a channel independent of any attestation's
+    `public_key_url` (a checked-in allowlist, a distributed config, an
+    operator-curated file) and is what `walk(..., trust_anchor=...)` compares
+    the fetched key's fingerprint against. Without it, walk() proves integrity
+    but NOT authenticity (the URL-substitution forgery is undefeated).
+
+    File format: a flat JSON object mapping each issuer identifier (an issuer
+    id string and/or its `public_key_url`) to the expected key fingerprint:
+
+        {
+          "acme-corp-2026": "sha256:<64-hex>",
+          "https://acme.example/keys/2026.pem": "sha256:<64-hex>"
+        }
+
+    Returns the parsed mapping. Raises ValueError with a clear, actionable
+    message on any malformed input (missing file, non-JSON, non-object root,
+    non-string keys/values, or fingerprints not in `sha256:<hex>` form).
+    """
+    p = Path(path)
+    try:
+        raw = p.read_text(encoding="utf-8")
+    except FileNotFoundError as e:
+        raise ValueError(f"trust store not found: {p}") from e
+    except OSError as e:
+        raise ValueError(f"cannot read trust store {p}: {e}") from e
+
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"trust store {p} is not valid JSON: {e}") from e
+
+    if not isinstance(data, dict):
+        raise ValueError(
+            f"trust store {p} must be a JSON object mapping issuer -> fingerprint, "
+            f"got {type(data).__name__}"
+        )
+
+    store: dict[str, str] = {}
+    for issuer, fp in data.items():
+        if not isinstance(issuer, str) or not issuer:
+            raise ValueError(
+                f"trust store {p} has a non-string or empty issuer key: {issuer!r}"
+            )
+        if not isinstance(fp, str):
+            raise ValueError(
+                f"trust store {p} fingerprint for issuer {issuer!r} must be a string, "
+                f"got {type(fp).__name__}"
+            )
+        if not fp.startswith("sha256:") or len(fp) != len("sha256:") + 64:
+            raise ValueError(
+                f"trust store {p} fingerprint for issuer {issuer!r} is not a valid "
+                f"'sha256:<64-hex>' value: {fp!r}"
+            )
+        store[issuer] = fp
+    return store
 
 
 def revoke(custodian: str) -> None:
