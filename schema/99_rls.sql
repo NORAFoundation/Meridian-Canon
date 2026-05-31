@@ -29,7 +29,7 @@ CREATE OR REPLACE FUNCTION actor_has_grant(
 ) RETURNS boolean AS $$
   SELECT EXISTS (
     SELECT 1 FROM acl_grants
-    WHERE actor_id = current_actor_id()
+    WHERE actor_id = (SELECT current_actor_id())   -- AUDIT-FIX (CRIT-5): eval once
       AND resource_type = p_resource_type
       AND resource_id = p_resource_id
       AND p_permission = ANY(permissions)
@@ -44,8 +44,12 @@ $$ LANGUAGE sql STABLE;
 
 ALTER TABLE audit_log ENABLE ROW LEVEL SECURITY;
 
+-- AUDIT-FIX (CRIT-5): wrap current_actor_role() in a scalar subquery so
+-- Postgres evaluates the actor lookup once per statement (InitPlan) rather
+-- than re-running the STABLE function for every candidate row. Documented
+-- Supabase RLS-performance pattern.
 CREATE POLICY audit_log_select ON audit_log FOR SELECT
-  USING (current_actor_role() IN ('owner', 'counsel'));
+  USING ((SELECT current_actor_role()) IN ('owner', 'counsel'));
 
 CREATE POLICY audit_log_insert ON audit_log FOR INSERT
   WITH CHECK (true);   -- inserts are mediated by the audit() helper
@@ -58,16 +62,18 @@ REVOKE UPDATE, DELETE ON audit_log FROM PUBLIC;
 
 ALTER TABLE documents ENABLE ROW LEVEL SECURITY;
 
+-- AUDIT-FIX (CRIT-5): current_actor_role() / current_actor_pii_ceiling()
+-- wrapped in scalar subqueries for once-per-statement evaluation.
 CREATE POLICY documents_owner_counsel ON documents FOR SELECT
   USING (
-    current_actor_role() IN ('owner', 'counsel')
-    AND pii_tier_rank(evidentiary_pii_tier) <= pii_tier_rank(current_actor_pii_ceiling())
+    (SELECT current_actor_role()) IN ('owner', 'counsel')
+    AND pii_tier_rank(evidentiary_pii_tier) <= pii_tier_rank((SELECT current_actor_pii_ceiling()))
   );
 
 CREATE POLICY documents_paralegal ON documents FOR SELECT
   USING (
-    current_actor_role() = 'paralegal'
-    AND pii_tier_rank(evidentiary_pii_tier) <= pii_tier_rank(current_actor_pii_ceiling())
+    (SELECT current_actor_role()) = 'paralegal'
+    AND pii_tier_rank(evidentiary_pii_tier) <= pii_tier_rank((SELECT current_actor_pii_ceiling()))
     AND NOT EXISTS (
       SELECT 1 FROM privilege_assertions pa
       WHERE pa.resource_type = 'document' AND pa.resource_id = documents.id
@@ -80,30 +86,40 @@ CREATE POLICY documents_grant ON documents FOR SELECT
   USING (actor_has_grant('document', id, 'read'));
 
 CREATE POLICY documents_owner_modify ON documents FOR ALL
-  USING (current_actor_role() IN ('owner', 'counsel', 'system'))
-  WITH CHECK (current_actor_role() IN ('owner', 'counsel', 'system'));
+  USING ((SELECT current_actor_role()) IN ('owner', 'counsel', 'system'))
+  WITH CHECK ((SELECT current_actor_role()) IN ('owner', 'counsel', 'system'));
 
 ALTER TABLE chunks ENABLE ROW LEVEL SECURITY;
 
+-- AUDIT-FIX (CRIT-3): the original EXISTS only confirmed the parent
+-- document row existed — it did NOT re-apply the parent's PII-tier gate.
+-- RLS policies on `documents` do not transitively filter a subquery issued
+-- from the `chunks` policy, so a paralegal whose pii_ceiling is below the
+-- parent document's tier could still read chunks derived from that document
+-- (a chunk's own pii_tier may be set lower than its source). Replicate the
+-- parent document's tier check inside the EXISTS so a chunk is only visible
+-- when BOTH the chunk's tier and its source document's tier are within the
+-- actor's ceiling.
+-- AUDIT-FIX (CRIT-5): current_actor_* calls wrapped in scalar subqueries.
 CREATE POLICY chunks_inherit_doc ON chunks FOR SELECT
   USING (
-    pii_tier_rank(pii_tier) <= pii_tier_rank(current_actor_pii_ceiling())
+    pii_tier_rank(pii_tier) <= pii_tier_rank((SELECT current_actor_pii_ceiling()))
     AND EXISTS (
       SELECT 1 FROM documents d
       WHERE d.id = chunks.document_id
-        -- documents RLS will further filter
+        AND pii_tier_rank(d.evidentiary_pii_tier) <= pii_tier_rank((SELECT current_actor_pii_ceiling()))
     )
     AND NOT EXISTS (
       SELECT 1 FROM privilege_assertions pa
       WHERE pa.resource_type = 'chunk' AND pa.resource_id = chunks.id
         AND NOT pa.waived
-        AND current_actor_role() NOT IN ('owner', 'counsel')
+        AND (SELECT current_actor_role()) NOT IN ('owner', 'counsel')
     )
   );
 
 CREATE POLICY chunks_owner_modify ON chunks FOR ALL
-  USING (current_actor_role() IN ('owner', 'counsel', 'system'))
-  WITH CHECK (current_actor_role() IN ('owner', 'counsel', 'system'));
+  USING ((SELECT current_actor_role()) IN ('owner', 'counsel', 'system'))
+  WITH CHECK ((SELECT current_actor_role()) IN ('owner', 'counsel', 'system'));
 
 -- ----------------------------------------------------------------------------
 -- Communications: emails, messages, recordings.
@@ -114,48 +130,48 @@ ALTER TABLE emails ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY emails_role_pii ON emails FOR SELECT
   USING (
-    current_actor_role() IN ('owner', 'counsel', 'paralegal')
-    AND pii_tier_rank(pii_tier) <= pii_tier_rank(current_actor_pii_ceiling())
+    (SELECT current_actor_role()) IN ('owner', 'counsel', 'paralegal')
+    AND pii_tier_rank(pii_tier) <= pii_tier_rank((SELECT current_actor_pii_ceiling()))
   );
 
 CREATE POLICY emails_grant ON emails FOR SELECT
   USING (actor_has_grant('email', id, 'read'));
 
 CREATE POLICY emails_owner_modify ON emails FOR ALL
-  USING (current_actor_role() IN ('owner', 'counsel', 'system'))
-  WITH CHECK (current_actor_role() IN ('owner', 'counsel', 'system'));
+  USING ((SELECT current_actor_role()) IN ('owner', 'counsel', 'system'))
+  WITH CHECK ((SELECT current_actor_role()) IN ('owner', 'counsel', 'system'));
 
 ALTER TABLE messages ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY messages_role_pii ON messages FOR SELECT
   USING (
-    pii_tier_rank(pii_tier) <= pii_tier_rank(current_actor_pii_ceiling())
+    pii_tier_rank(pii_tier) <= pii_tier_rank((SELECT current_actor_pii_ceiling()))
     AND (
-      current_actor_role() IN ('owner', 'counsel')
-      OR (current_actor_role() = 'paralegal' AND kind != 'ai_chat')
-      OR (current_actor_role() = 'expert' AND actor_has_grant('message', id, 'read'))
-      OR (current_actor_role() = 'family' AND actor_has_grant('message', id, 'read'))
+      (SELECT current_actor_role()) IN ('owner', 'counsel')
+      OR ((SELECT current_actor_role()) = 'paralegal' AND kind != 'ai_chat')
+      OR ((SELECT current_actor_role()) = 'expert' AND actor_has_grant('message', id, 'read'))
+      OR ((SELECT current_actor_role()) = 'family' AND actor_has_grant('message', id, 'read'))
     )
   );
 
 CREATE POLICY messages_owner_modify ON messages FOR ALL
-  USING (current_actor_role() IN ('owner', 'counsel', 'system'))
-  WITH CHECK (current_actor_role() IN ('owner', 'counsel', 'system'));
+  USING ((SELECT current_actor_role()) IN ('owner', 'counsel', 'system'))
+  WITH CHECK ((SELECT current_actor_role()) IN ('owner', 'counsel', 'system'));
 
 ALTER TABLE recordings ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY recordings_role_pii ON recordings FOR SELECT
   USING (
-    pii_tier_rank(pii_tier) <= pii_tier_rank(current_actor_pii_ceiling())
+    pii_tier_rank(pii_tier) <= pii_tier_rank((SELECT current_actor_pii_ceiling()))
     AND (
-      current_actor_role() IN ('owner', 'counsel', 'paralegal')
+      (SELECT current_actor_role()) IN ('owner', 'counsel', 'paralegal')
       OR actor_has_grant('recording', id, 'read')
     )
   );
 
 CREATE POLICY recordings_owner_modify ON recordings FOR ALL
-  USING (current_actor_role() IN ('owner', 'counsel', 'system'))
-  WITH CHECK (current_actor_role() IN ('owner', 'counsel', 'system'));
+  USING ((SELECT current_actor_role()) IN ('owner', 'counsel', 'system'))
+  WITH CHECK ((SELECT current_actor_role()) IN ('owner', 'counsel', 'system'));
 
 -- ----------------------------------------------------------------------------
 -- Telemetry: highest tier by default — owner + counsel only, with
@@ -176,30 +192,30 @@ ALTER TABLE activity_events ENABLE ROW LEVEL SECURITY;
 ALTER TABLE tracking_disclosures ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY telemetry_owner_counsel_de ON device_events FOR SELECT
-  USING (current_actor_role() IN ('owner', 'counsel'));
+  USING ((SELECT current_actor_role()) IN ('owner', 'counsel'));
 CREATE POLICY telemetry_owner_counsel_lp ON location_pings FOR SELECT
-  USING (current_actor_role() IN ('owner', 'counsel'));
+  USING ((SELECT current_actor_role()) IN ('owner', 'counsel'));
 CREATE POLICY telemetry_owner_counsel_hr ON health_records FOR SELECT
-  USING (current_actor_role() IN ('owner', 'counsel'));
+  USING ((SELECT current_actor_role()) IN ('owner', 'counsel'));
 CREATE POLICY telemetry_owner_counsel_wr ON workout_routes FOR SELECT
-  USING (current_actor_role() IN ('owner', 'counsel'));
+  USING ((SELECT current_actor_role()) IN ('owner', 'counsel'));
 CREATE POLICY telemetry_owner_counsel_wa ON wifi_associations FOR SELECT
-  USING (current_actor_role() IN ('owner', 'counsel'));
+  USING ((SELECT current_actor_role()) IN ('owner', 'counsel'));
 CREATE POLICY telemetry_owner_counsel_bt ON bluetooth_encounters FOR SELECT
-  USING (current_actor_role() IN ('owner', 'counsel'));
+  USING ((SELECT current_actor_role()) IN ('owner', 'counsel'));
 CREATE POLICY telemetry_owner_counsel_si ON account_sign_ins FOR SELECT
-  USING (current_actor_role() IN ('owner', 'counsel'));
+  USING ((SELECT current_actor_role()) IN ('owner', 'counsel'));
 CREATE POLICY telemetry_owner_counsel_bh ON browser_history FOR SELECT
-  USING (current_actor_role() IN ('owner', 'counsel'));
+  USING ((SELECT current_actor_role()) IN ('owner', 'counsel'));
 CREATE POLICY telemetry_owner_counsel_n  ON notes FOR SELECT
-  USING (current_actor_role() IN ('owner', 'counsel')
-         AND pii_tier_rank(pii_tier) <= pii_tier_rank(current_actor_pii_ceiling()));
+  USING ((SELECT current_actor_role()) IN ('owner', 'counsel')
+         AND pii_tier_rank(pii_tier) <= pii_tier_rank((SELECT current_actor_pii_ceiling())));
 CREATE POLICY telemetry_owner_counsel_sp ON social_posts FOR SELECT
-  USING (current_actor_role() IN ('owner', 'counsel', 'paralegal'));
+  USING ((SELECT current_actor_role()) IN ('owner', 'counsel', 'paralegal'));
 CREATE POLICY telemetry_owner_counsel_ae ON activity_events FOR SELECT
-  USING (current_actor_role() IN ('owner', 'counsel'));
+  USING ((SELECT current_actor_role()) IN ('owner', 'counsel'));
 CREATE POLICY telemetry_owner_counsel_td ON tracking_disclosures FOR SELECT
-  USING (current_actor_role() IN ('owner', 'counsel'));
+  USING ((SELECT current_actor_role()) IN ('owner', 'counsel'));
 
 -- Modify policies (owner/counsel/system only)
 DO $$ DECLARE t text; BEGIN
@@ -211,8 +227,8 @@ DO $$ DECLARE t text; BEGIN
   ]) LOOP
     EXECUTE format(
       'CREATE POLICY %I_modify ON %I FOR ALL '
-      'USING (current_actor_role() IN (''owner'',''counsel'',''system'')) '
-      'WITH CHECK (current_actor_role() IN (''owner'',''counsel'',''system''))',
+      'USING ((SELECT current_actor_role()) IN (''owner'',''counsel'',''system'')) '
+      'WITH CHECK ((SELECT current_actor_role()) IN (''owner'',''counsel'',''system''))',
       t || '_modify_owner', t
     );
   END LOOP;
@@ -229,35 +245,35 @@ ALTER TABLE cdrs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE cdr_locations ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY fa_role ON financial_accounts FOR SELECT
-  USING (current_actor_role() IN ('owner', 'counsel', 'paralegal'));
+  USING ((SELECT current_actor_role()) IN ('owner', 'counsel', 'paralegal'));
 CREATE POLICY fa_modify ON financial_accounts FOR ALL
-  USING (current_actor_role() IN ('owner', 'counsel', 'system'))
-  WITH CHECK (current_actor_role() IN ('owner', 'counsel', 'system'));
+  USING ((SELECT current_actor_role()) IN ('owner', 'counsel', 'system'))
+  WITH CHECK ((SELECT current_actor_role()) IN ('owner', 'counsel', 'system'));
 
 CREATE POLICY tx_role ON transactions FOR SELECT
-  USING (current_actor_role() IN ('owner', 'counsel', 'paralegal'));
+  USING ((SELECT current_actor_role()) IN ('owner', 'counsel', 'paralegal'));
 CREATE POLICY tx_modify ON transactions FOR ALL
-  USING (current_actor_role() IN ('owner', 'counsel', 'system'))
-  WITH CHECK (current_actor_role() IN ('owner', 'counsel', 'system'));
+  USING ((SELECT current_actor_role()) IN ('owner', 'counsel', 'system'))
+  WITH CHECK ((SELECT current_actor_role()) IN ('owner', 'counsel', 'system'));
 
 CREATE POLICY p2p_role ON p2p_transfers FOR SELECT
-  USING (current_actor_role() IN ('owner', 'counsel', 'paralegal'));
+  USING ((SELECT current_actor_role()) IN ('owner', 'counsel', 'paralegal'));
 CREATE POLICY p2p_modify ON p2p_transfers FOR ALL
-  USING (current_actor_role() IN ('owner', 'counsel', 'system'))
-  WITH CHECK (current_actor_role() IN ('owner', 'counsel', 'system'));
+  USING ((SELECT current_actor_role()) IN ('owner', 'counsel', 'system'))
+  WITH CHECK ((SELECT current_actor_role()) IN ('owner', 'counsel', 'system'));
 
 CREATE POLICY cdrs_role ON cdrs FOR SELECT
-  USING (current_actor_role() IN ('owner', 'counsel', 'paralegal'));
+  USING ((SELECT current_actor_role()) IN ('owner', 'counsel', 'paralegal'));
 CREATE POLICY cdrs_modify ON cdrs FOR ALL
-  USING (current_actor_role() IN ('owner', 'counsel', 'system'))
-  WITH CHECK (current_actor_role() IN ('owner', 'counsel', 'system'));
+  USING ((SELECT current_actor_role()) IN ('owner', 'counsel', 'system'))
+  WITH CHECK ((SELECT current_actor_role()) IN ('owner', 'counsel', 'system'));
 
 -- CSLI: owner + counsel only by default (privacy-elevated).
 CREATE POLICY cdr_loc_role ON cdr_locations FOR SELECT
-  USING (current_actor_role() IN ('owner', 'counsel'));
+  USING ((SELECT current_actor_role()) IN ('owner', 'counsel'));
 CREATE POLICY cdr_loc_modify ON cdr_locations FOR ALL
-  USING (current_actor_role() IN ('owner', 'counsel', 'system'))
-  WITH CHECK (current_actor_role() IN ('owner', 'counsel', 'system'));
+  USING ((SELECT current_actor_role()) IN ('owner', 'counsel', 'system'))
+  WITH CHECK ((SELECT current_actor_role()) IN ('owner', 'counsel', 'system'));
 
 -- ----------------------------------------------------------------------------
 -- Privilege + redactions: owner + counsel only for full visibility.
@@ -270,22 +286,22 @@ ALTER TABLE redactions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE withheld_documents ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY pa_role ON privilege_assertions FOR SELECT
-  USING (current_actor_role() IN ('owner', 'counsel'));
+  USING ((SELECT current_actor_role()) IN ('owner', 'counsel'));
 CREATE POLICY pa_modify ON privilege_assertions FOR ALL
-  USING (current_actor_role() IN ('owner', 'counsel', 'system'))
-  WITH CHECK (current_actor_role() IN ('owner', 'counsel', 'system'));
+  USING ((SELECT current_actor_role()) IN ('owner', 'counsel', 'system'))
+  WITH CHECK ((SELECT current_actor_role()) IN ('owner', 'counsel', 'system'));
 
 CREATE POLICY red_role ON redactions FOR SELECT
-  USING (current_actor_role() IN ('owner', 'counsel', 'paralegal'));
+  USING ((SELECT current_actor_role()) IN ('owner', 'counsel', 'paralegal'));
 CREATE POLICY red_modify ON redactions FOR ALL
-  USING (current_actor_role() IN ('owner', 'counsel', 'system'))
-  WITH CHECK (current_actor_role() IN ('owner', 'counsel', 'system'));
+  USING ((SELECT current_actor_role()) IN ('owner', 'counsel', 'system'))
+  WITH CHECK ((SELECT current_actor_role()) IN ('owner', 'counsel', 'system'));
 
 CREATE POLICY wh_role ON withheld_documents FOR SELECT
-  USING (current_actor_role() IN ('owner', 'counsel'));
+  USING ((SELECT current_actor_role()) IN ('owner', 'counsel'));
 CREATE POLICY wh_modify ON withheld_documents FOR ALL
-  USING (current_actor_role() IN ('owner', 'counsel', 'system'))
-  WITH CHECK (current_actor_role() IN ('owner', 'counsel', 'system'));
+  USING ((SELECT current_actor_role()) IN ('owner', 'counsel', 'system'))
+  WITH CHECK ((SELECT current_actor_role()) IN ('owner', 'counsel', 'system'));
 
 -- ----------------------------------------------------------------------------
 -- Productions: visible per recipient mapping (this DB is the OUTBOUND view;
@@ -298,22 +314,22 @@ ALTER TABLE production_documents ENABLE ROW LEVEL SECURITY;
 ALTER TABLE production_redactions ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY prod_role ON productions FOR SELECT
-  USING (current_actor_role() IN ('owner', 'counsel', 'paralegal'));
+  USING ((SELECT current_actor_role()) IN ('owner', 'counsel', 'paralegal'));
 CREATE POLICY prod_modify ON productions FOR ALL
-  USING (current_actor_role() IN ('owner', 'counsel', 'system'))
-  WITH CHECK (current_actor_role() IN ('owner', 'counsel', 'system'));
+  USING ((SELECT current_actor_role()) IN ('owner', 'counsel', 'system'))
+  WITH CHECK ((SELECT current_actor_role()) IN ('owner', 'counsel', 'system'));
 
 CREATE POLICY proddocs_role ON production_documents FOR SELECT
-  USING (current_actor_role() IN ('owner', 'counsel', 'paralegal'));
+  USING ((SELECT current_actor_role()) IN ('owner', 'counsel', 'paralegal'));
 CREATE POLICY proddocs_modify ON production_documents FOR ALL
-  USING (current_actor_role() IN ('owner', 'counsel', 'system'))
-  WITH CHECK (current_actor_role() IN ('owner', 'counsel', 'system'));
+  USING ((SELECT current_actor_role()) IN ('owner', 'counsel', 'system'))
+  WITH CHECK ((SELECT current_actor_role()) IN ('owner', 'counsel', 'system'));
 
 CREATE POLICY prodred_role ON production_redactions FOR SELECT
-  USING (current_actor_role() IN ('owner', 'counsel', 'paralegal'));
+  USING ((SELECT current_actor_role()) IN ('owner', 'counsel', 'paralegal'));
 CREATE POLICY prodred_modify ON production_redactions FOR ALL
-  USING (current_actor_role() IN ('owner', 'counsel', 'system'))
-  WITH CHECK (current_actor_role() IN ('owner', 'counsel', 'system'));
+  USING ((SELECT current_actor_role()) IN ('owner', 'counsel', 'system'))
+  WITH CHECK ((SELECT current_actor_role()) IN ('owner', 'counsel', 'system'));
 
 -- ----------------------------------------------------------------------------
 -- Default deny for opposing_counsel and court_clerk on every primary table.

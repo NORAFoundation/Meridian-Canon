@@ -46,12 +46,22 @@ class ChallengeType(str, Enum):
 
 
 class ChallengeOutcome(str, Enum):
-    """Per paper §6.6.2."""
+    """Per paper §6.6.2.
+
+    # AUDIT-FIX (R2): added ERROR. Previously an exception, network failure,
+    # or "could not run" in any challenge module defaulted to SURVIVED — i.e.
+    # the *absence* of a refutation was laundered into a *successful* one, the
+    # single most dangerous failure mode in the epistemic chain. ERROR records
+    # "the challenge could not be executed" honestly. The harness treats ERROR
+    # as INCONCLUSIVE: it does NOT block sealing the way FAILED does, but it is
+    # never counted as a passed challenge and is surfaced to verifiers.
+    """
 
     SURVIVED = "survived"
     FAILED = "failed"
     REVISED = "revised"
     CONTESTED = "contested"  # Tri-Model Consensus all-disagree case
+    ERROR = "error"  # AUDIT-FIX (R2): challenge could not be run; inconclusive
 
 
 class AttestationKind(str, Enum):
@@ -175,7 +185,22 @@ class Refutation(BaseModel):
 
 
 class Seal(BaseModel):
-    """Cryptographic binding (R7, R8)."""
+    """Cryptographic binding (R7, R8).
+
+    # AUDIT-TODO (K3 — DEFERRED, do not implement here): no append-only chain.
+    # Each Seal binds the content of ONE attestation (chain_hash over its own
+    # canonical bytes) but there is no `prev_hash` linking it to the previously
+    # issued attestation, and no Merkle/transparency root committing the set.
+    # Consequently an issuer (or anyone who later obtains the signing key) can
+    # silently DROP, REORDER, or BACKDATE attestations: nothing in a single
+    # seal proves where it sits in the issuer's history. Closing this needs a
+    # tamper-evident log: add `prev_hash: sha256:` to the Seal (hash of the
+    # immediately preceding attestation's chain_hash), have emit.py thread the
+    # issuer's head pointer, and publish periodic signed Merkle roots (see
+    # transparency.py) so verifiers can detect omission/equivocation. This is a
+    # structural redesign (per-issuer head storage, fork-consistency, gossip)
+    # and is intentionally NOT built here.
+    """
 
     chain_hash: str = Field(..., pattern=r"^sha256:[0-9a-f]{64}$")
     canonicalization: str = Field("rfc8785", description="MUST be 'rfc8785' for v0.1.1")

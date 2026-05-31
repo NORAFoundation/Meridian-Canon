@@ -15,7 +15,7 @@ Public surface:
 """
 
 from .lm import EchoAdapter, LMAdapter, OllamaAdapter, OpenAIAdapter
-from .harness import run_harness
+from .harness import run_harness, RefutationFailedError
 
 __all__ = [
     "EchoAdapter",
@@ -23,4 +23,5 @@ __all__ = [
     "OllamaAdapter",
     "OpenAIAdapter",
     "run_harness",
+    "RefutationFailedError",  # AUDIT-FIX (R1)
 ]

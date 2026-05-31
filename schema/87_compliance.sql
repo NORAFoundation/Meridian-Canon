@@ -74,3 +74,44 @@ CREATE TABLE pat_performance (
   good_cause_argument      text,
   created_at               timestamptz NOT NULL DEFAULT now()
 );
+
+-- AUDIT-FIX (HIGH-2): the compliance engine tables held no RLS — any
+-- authenticated actor (paralegal, expert, family) could read the full
+-- mandate/audit/barrier strategy. These tables encode litigation theory
+-- and are owner/counsel only, consistent with privilege_assertions in
+-- 99_rls.sql. Default-deny for every other role (no positive policy).
+-- Writes restricted to owner/counsel/system.
+ALTER TABLE mandates             ENABLE ROW LEVEL SECURITY;
+ALTER TABLE compliance_audit     ENABLE ROW LEVEL SECURITY;
+ALTER TABLE compliance_barriers  ENABLE ROW LEVEL SECURITY;
+ALTER TABLE pat_performance      ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY mandates_role ON mandates FOR SELECT
+  USING ((SELECT current_actor_role()) IN ('owner', 'counsel'));
+CREATE POLICY mandates_modify ON mandates FOR ALL
+  USING ((SELECT current_actor_role()) IN ('owner', 'counsel', 'system'))
+  WITH CHECK ((SELECT current_actor_role()) IN ('owner', 'counsel', 'system'));
+
+CREATE POLICY compliance_audit_role ON compliance_audit FOR SELECT
+  USING ((SELECT current_actor_role()) IN ('owner', 'counsel'));
+CREATE POLICY compliance_audit_modify ON compliance_audit FOR ALL
+  USING ((SELECT current_actor_role()) IN ('owner', 'counsel', 'system'))
+  WITH CHECK ((SELECT current_actor_role()) IN ('owner', 'counsel', 'system'));
+
+CREATE POLICY compliance_barriers_role ON compliance_barriers FOR SELECT
+  USING ((SELECT current_actor_role()) IN ('owner', 'counsel'));
+CREATE POLICY compliance_barriers_modify ON compliance_barriers FOR ALL
+  USING ((SELECT current_actor_role()) IN ('owner', 'counsel', 'system'))
+  WITH CHECK ((SELECT current_actor_role()) IN ('owner', 'counsel', 'system'));
+
+CREATE POLICY pat_performance_role ON pat_performance FOR SELECT
+  USING ((SELECT current_actor_role()) IN ('owner', 'counsel'));
+CREATE POLICY pat_performance_modify ON pat_performance FOR ALL
+  USING ((SELECT current_actor_role()) IN ('owner', 'counsel', 'system'))
+  WITH CHECK ((SELECT current_actor_role()) IN ('owner', 'counsel', 'system'));
+
+-- AUDIT-FIX (MED-8): index the foreign-key columns. Unindexed FKs force
+-- sequential scans on join/lookup and on parent-row deletes.
+CREATE INDEX compliance_audit_mandate_idx    ON compliance_audit(mandate_id);
+CREATE INDEX compliance_barriers_matter_idx  ON compliance_barriers(matter_id);
+CREATE INDEX pat_performance_mandate_idx     ON pat_performance(mandate_id);

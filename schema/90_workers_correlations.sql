@@ -60,6 +60,49 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+-- AUDIT-FIX (HIGH-5): dead-letter / stale-lease sweep.
+-- A worker that crashes mid-job leaves its row in state='running' with a
+-- locked_until in the past; jobs_claim_next only pulls 'queued' rows, so
+-- the work is silently stranded forever. This sweep reclaims expired
+-- leases: rows with remaining attempts are re-queued; rows that have
+-- exhausted max_attempts are moved to 'dead_letter' for inspection.
+-- Returns the number of rows that were dead-lettered.
+--
+-- Schedule via pg_cron, e.g. (run once as a privileged role):
+--   SELECT cron.schedule('jobs_sweep_stale', '* * * * *', $$SELECT jobs_sweep_stale()$$);
+CREATE OR REPLACE FUNCTION jobs_sweep_stale() RETURNS int AS $$
+DECLARE
+  dead_count int;
+BEGIN
+  -- Re-queue reclaimable stale jobs (lease expired, attempts remain).
+  UPDATE jobs SET
+    state = 'queued',
+    locked_by = NULL,
+    locked_until = NULL,
+    run_after = now()
+  WHERE state = 'running'
+    AND locked_until < now()
+    AND attempts < max_attempts;
+
+  -- Dead-letter the exhausted ones (lease expired, no attempts left).
+  WITH dead AS (
+    UPDATE jobs SET
+      state = 'dead_letter',
+      locked_by = NULL,
+      locked_until = NULL,
+      completed_at = now(),
+      last_error = coalesce(last_error, 'stale lease; max_attempts exhausted')
+    WHERE state = 'running'
+      AND locked_until < now()
+      AND attempts >= max_attempts
+    RETURNING 1
+  )
+  SELECT count(*) INTO dead_count FROM dead;
+
+  RETURN dead_count;
+END;
+$$ LANGUAGE plpgsql;
+
 -- ----------------------------------------------------------------------------
 -- transformations: every derivation applied to a document or chunk.
 -- "OCR'd version produced by tesseract 5.3.0 on date X"; "transcript v2

@@ -134,15 +134,26 @@ class HybridSearch:
 
     def _paradedb_search(self, query: str, *, k: int, matter_id: Optional[str]) -> list[dict]:
         """ParadeDB BM25 search via @@@ operator (requires pg_search extension)."""
-        # Escape single quotes in query to prevent SQL injection
-        safe_query = query.replace("'", "''")
+        # AUDIT-FIX (CRIT-2): The previous implementation did
+        # `query.replace("'", "''")` and concatenated the result into
+        # `paradedb.parse('text:' || %s)`. That is NOT parameterization: the
+        # user string was still fed to ParadeDB's query-language parser, so
+        # injection of query operators (e.g. `foo' AND x:*`, boosts, field
+        # selectors, ranges) was possible, and manual quote-doubling does not
+        # defend against the query DSL itself.
+        #
+        # Genuinely safe construction: use ParadeDB's structured query builder
+        # `paradedb.term(field, value)`. It takes the target field and the user
+        # value as SEPARATE arguments; the value is bound as a normal SQL
+        # parameter and treated as an opaque literal term — it is never parsed
+        # as ParadeDB query syntax. No manual escaping is needed or wanted.
         sql = (
             "SELECT c.id::text AS chunk_id, "
             "       paradedb.score(c.id) AS bm25_score "
             "FROM chunks c "
-            "WHERE c @@@ paradedb.parse('text:' || %s) "
+            "WHERE c @@@ paradedb.term('text', %s) "
         )
-        params: list = [safe_query]
+        params: list = [query]
         if matter_id:
             sql += "AND c.document_id IN (SELECT id FROM documents WHERE matter_id = %s) "
             params.append(matter_id)
@@ -154,19 +165,30 @@ class HybridSearch:
 
     def _dense_search(self, query: str, *, k: int, matter_id: Optional[str]) -> list[dict]:
         vec_str = vector_to_pgvector_literal(embed_query(query))
+        # AUDIT-FIX (MED-4): The previous query passed the ~8KB vector literal
+        # twice (once in the SELECT cosine expression, once in ORDER BY) and
+        # parsed `%s::vector` on both. Bind and parse the query vector exactly
+        # once in a CTE, then reference q.qvec in both places. The result set
+        # and its ordering are unchanged: ORDER BY e.vector <=> q.qvec yields
+        # the identical chunk_id sequence, so RRF/fusion ordering is preserved.
         sql = (
+            "WITH q AS (SELECT %s::vector AS qvec) "
             "SELECT e.chunk_id::text AS chunk_id, "
-            "       1 - (e.vector <=> %s::vector) AS cosine_score "
+            "       1 - (e.vector <=> q.qvec) AS cosine_score "
             "FROM embeddings e "
         )
         params: list = [vec_str]
         if matter_id:
             sql += "JOIN chunks c ON e.chunk_id = c.id "
             sql += "JOIN documents d ON c.document_id = d.id "
+        # Cross-join the single-row CTE last so the explicit JOINs above bind
+        # to `e` (not to `q`); q.qvec is then in scope for SELECT and ORDER BY.
+        sql += "CROSS JOIN q "
+        if matter_id:
             sql += "WHERE d.matter_id = %s "
             params.append(matter_id)
-        sql += "ORDER BY e.vector <=> %s::vector LIMIT %s"
-        params.extend([vec_str, k])
+        sql += "ORDER BY e.vector <=> q.qvec LIMIT %s"
+        params.append(k)
         with self.conn.cursor() as cur:
             cur.execute(sql, params)
             return list(cur.fetchall())

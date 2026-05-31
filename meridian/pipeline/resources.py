@@ -1,7 +1,10 @@
 """Dagster resources for Meridian-Canon pipeline."""
 from __future__ import annotations
+import logging
 import os
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 try:
     from dagster import ConfigurableResource
@@ -16,8 +19,10 @@ except ImportError:
 
 class DatabaseResource(ConfigurableResource if _DAGSTER_AVAILABLE else object):  # type: ignore[misc]
     """psycopg connection pool resource."""
+    # AUDIT-FIX (HIGH wrong DB port): canonical litigation_db listens on 5432,
+    # not 5433. Override via MERIDIAN_DB_URL.
     connection_string: str = os.environ.get(
-        "MERIDIAN_DB_URL", "postgresql://localhost:5433/meridian"
+        "MERIDIAN_DB_URL", "postgresql://localhost:5432/meridian"
     )
 
     def get_connection(self):
@@ -44,9 +49,16 @@ class LLMResource(ConfigurableResource if _DAGSTER_AVAILABLE else object):  # ty
         try:
             from meridian.refute.lm import LiteLLMAdapter
             return [LiteLLMAdapter(name) for name in self.model_names]
-        except Exception:
-            # Fallback: OllamaAdapter for each model (no litellm dep)
+        except ImportError:
+            # AUDIT-FIX (MED LLMResource fallback masks failures): only fall back
+            # when litellm itself is missing. Any other error (auth, config,
+            # runtime) must propagate so the run fails loudly instead of
+            # silently degrading to a different provider/model.
             from meridian.refute.lm import OllamaAdapter
+            logger.warning(
+                "litellm not installed; falling back to OllamaAdapter for models %s",
+                self.model_names,
+            )
             return [OllamaAdapter(model=name.split("/", 1)[-1]) for name in self.model_names]
 
 
@@ -56,3 +68,8 @@ class CanonResource(ConfigurableResource if _DAGSTER_AVAILABLE else object):  # 
     public_key_url: str = os.environ.get(
         "MERIDIAN_PUBLIC_KEY_URL", "https://norafoundation.io/canon/key.pem"
     )
+    # AUDIT-FIX (P1 seal swallows failures): when True (default), a signing
+    # failure propagates and Dagster marks the run failed instead of emitting
+    # an unsigned attestation downstream. Override via MERIDIAN_STRICT_SEALING=0
+    # only for explicit dev/test graceful-degradation.
+    strict_sealing: bool = os.environ.get("MERIDIAN_STRICT_SEALING", "1") not in ("0", "false", "False")

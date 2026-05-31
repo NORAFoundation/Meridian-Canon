@@ -40,7 +40,11 @@ class InspectRefutationResult:
 
 
 def _parse_outcome_str(text: str) -> str:
-    """Normalize model output to one of: survived, failed, revised."""
+    """Normalize model output to one of: survived, failed, revised, error.
+
+    # AUDIT-FIX (R2): unparseable output ⇒ "error" (inconclusive), not
+    # "survived". A garbled/empty model reply must not silently clear a claim.
+    """
     norm = (text or "").strip().lower()
     for token in norm.split():
         clean = token.strip(".,;:'\"")
@@ -50,13 +54,17 @@ def _parse_outcome_str(text: str) -> str:
             return "failed"
         if clean in {"revised", "modified", "weakened"}:
             return "revised"
-    return "survived"  # least-prejudicial default
+    return "error"  # AUDIT-FIX (R2): unparseable ⇒ inconclusive
 
 
 def _tri_model_consensus(outcomes: list[str]) -> ChallengeOutcome:
-    """Majority vote across model outcomes. Ties → CONTESTED."""
+    """Majority vote across model outcomes. Ties → CONTESTED.
+
+    # AUDIT-FIX (R2): empty outcome set ⇒ ERROR (no votes ran), not SURVIVED.
+    # A claim with zero usable adversary votes has not been cleared.
+    """
     if not outcomes:
-        return ChallengeOutcome.SURVIVED
+        return ChallengeOutcome.ERROR
     counts: dict[str, int] = {}
     for o in outcomes:
         counts[o] = counts.get(o, 0) + 1
@@ -78,10 +86,11 @@ def run_adversarial_inspect(
     Falls back to EchoAdapter behavior if inspect-ai not available.
     """
     if not model_names:
+        # AUDIT-FIX (R2): no models ⇒ challenge could not run ⇒ inconclusive.
         return InspectRefutationResult(
-            outcome=ChallengeOutcome.SURVIVED,
+            outcome=ChallengeOutcome.ERROR,
             model_outcomes={},
-            consensus_outcome=ChallengeOutcome.SURVIVED,
+            consensus_outcome=ChallengeOutcome.ERROR,
         )
 
     if not _INSPECT_AVAILABLE:
@@ -126,15 +135,20 @@ Outcome:"""
                 raw = result[0].samples[0].output.completion
                 model_outcomes[model_name] = _parse_outcome_str(raw)
             else:
-                model_outcomes[model_name] = "survived"
+                # AUDIT-FIX (R2): empty eval result ⇒ this model produced no
+                # usable vote ⇒ error, not survived.
+                model_outcomes[model_name] = "error"
         except Exception:
-            model_outcomes[model_name] = "survived"
+            # AUDIT-FIX (R2): per-model exception ⇒ error, not survived.
+            model_outcomes[model_name] = "error"
 
     outcomes_list = list(model_outcomes.values())
-    consensus = _tri_model_consensus(outcomes_list) if outcomes_list else ChallengeOutcome.SURVIVED
+    consensus = _tri_model_consensus(outcomes_list) if outcomes_list else ChallengeOutcome.ERROR
 
-    # Individual outcome: most common, or CONTESTED
-    primary = consensus if consensus != ChallengeOutcome.CONTESTED else ChallengeOutcome.SURVIVED
+    # Individual outcome: the consensus, unless CONTESTED. A CONTESTED
+    # consensus is surfaced as CONTESTED (not laundered into SURVIVED).
+    # AUDIT-FIX (R2): previously CONTESTED collapsed to SURVIVED here.
+    primary = consensus
 
     return InspectRefutationResult(
         outcome=primary,
@@ -158,16 +172,18 @@ def _fallback_run(
             outcome = adapter.refute(claim_statement, source_excerpt)
             model_outcomes[name] = outcome.value
         outcomes_list = list(model_outcomes.values())
-        consensus = _tri_model_consensus(outcomes_list) if outcomes_list else ChallengeOutcome.SURVIVED
-        primary = consensus if consensus != ChallengeOutcome.CONTESTED else ChallengeOutcome.SURVIVED
+        # AUDIT-FIX (R2): empty/CONTESTED no longer collapse to SURVIVED.
+        consensus = _tri_model_consensus(outcomes_list) if outcomes_list else ChallengeOutcome.ERROR
+        primary = consensus
         return InspectRefutationResult(
             outcome=primary,
             model_outcomes=model_outcomes,
             consensus_outcome=consensus,
         )
     except Exception:
+        # AUDIT-FIX (R2): fallback path failed entirely ⇒ inconclusive.
         return InspectRefutationResult(
-            outcome=ChallengeOutcome.SURVIVED,
+            outcome=ChallengeOutcome.ERROR,
             model_outcomes={},
-            consensus_outcome=ChallengeOutcome.SURVIVED,
+            consensus_outcome=ChallengeOutcome.ERROR,
         )

@@ -10,10 +10,15 @@ def test_no_entities_survives() -> None:
     assert result["outcome"] == "survived"
 
 
-def test_no_registry_survives_with_decline_reason() -> None:
-    """When no registry is available, survive but flag the decline reason."""
+def test_no_registry_is_error_not_survived() -> None:
+    """AUDIT-FIX (R2): when entities were extracted but no registry is
+    available, the check could not run. It must report ERROR (inconclusive)
+    with a decline_reason — NOT survived. The old behavior asserted
+    'survived', which laundered the absence of a consistency check into a
+    successful one. Updated to assert the corrected, honest outcome.
+    """
     result = consistency_check("Sender is sender@example.com.")
-    assert result["outcome"] == "survived"
+    assert result["outcome"] == "error"
     assert result.get("decline_reason") == "no_entity_registry_available"
 
 

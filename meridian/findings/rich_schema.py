@@ -195,6 +195,10 @@ class StatuteCitation(BaseModel):
     title: Optional[str] = None
     section: Optional[str] = None
     subsection: Optional[str] = None
+    # AUDIT-FIX: bare-form citations (e.g. "ch. 48", "§ 48.415(2)") carry less
+    # context than prefixed "Wis. Stat." forms; confidence lets retrieval weight
+    # them accordingly. Prefixed forms default higher at the call site.
+    confidence: float = Field(0.5, ge=0.0, le=1.0)
     source: SourceSpan = Field(default_factory=SourceSpan)
 
 
@@ -207,6 +211,7 @@ class CaseLawCitation(BaseModel):
     page: Optional[int] = None
     year: Optional[int] = None
     court: Optional[str] = None
+    confidence: float = Field(0.5, ge=0.0, le=1.0)
     source: SourceSpan = Field(default_factory=SourceSpan)
 
 

@@ -129,6 +129,23 @@ _WI_STAT_RE = re.compile(
     r"(?P<title>\d+)(?:\.(?P<section>\d+))?(?:\((?P<sub>[\w\d]+)\))?",
     re.IGNORECASE,
 )
+
+# AUDIT-FIX: the prefixed _WI_STAT_RE above misses the DOMINANT TPR/DHS forms,
+# which omit the "Wis."/"Wisconsin" prefix entirely. These supplementary
+# patterns catch:
+#   - bare section:  "§ 48.415(2)", "section 48.415", "sec. 48.42(1)(a)"
+#   - bare chapter:  "ch. 48", "chapter 48", "chs. 48 and 51"
+# Matched at lower confidence than prefixed forms and only when the leading
+# token (§ / section / ch.) makes a statute reading contextually plausible.
+_BARE_STAT_RE = re.compile(
+    r"(?P<lead>§\s*|sec(?:tion|\.)?\s+)"
+    r"(?P<title>\d{1,3})\.(?P<section>\d+)(?:\((?P<sub>[\w\d]+)\))?",
+    re.IGNORECASE,
+)
+_BARE_CHAPTER_RE = re.compile(
+    r"\b(?:chapters?|chs?\.?)\s+(?P<title>\d{1,3})\b",
+    re.IGNORECASE,
+)
 _USC_RE = re.compile(
     r"\b(?P<title>\d{1,2})\s*U\.?S\.?C\.?\s*§+\s*(?P<section>\d+(?:\.\d+)?)"
     r"(?:\((?P<sub>[\w\d]+)\))?",
@@ -161,6 +178,51 @@ def find_statutes(text: str) -> list[StatuteCitation]:
             title=title,
             section=section or None,
             subsection=sub or None,
+            confidence=0.95,  # AUDIT-FIX: explicit "Wis. Stat." prefix → high
+            source=SourceSpan(char_start=m.start(), char_end=m.end(),
+                              quoted_text=_quote_around(text, m.start(), m.end())),
+        ))
+
+    # AUDIT-FIX: bare WI statute forms ("§ 48.415(2)", "section 48.42").
+    # Canonicalized identically to the prefixed form so dedup against the
+    # _WI_STAT_RE pass above prevents double-counting the same cite.
+    for m in _BARE_STAT_RE.finditer(text):
+        title = m.group("title")
+        section = m.group("section") or ""
+        sub = m.group("sub") or ""
+        canonical = f"wis.stat.{title}" + (f".{section}" if section else "") + (f".{sub}" if sub else "")
+        if canonical in seen:
+            continue
+        seen.add(canonical)
+        out.append(StatuteCitation(
+            raw=m.group(0).strip(),
+            canonical=canonical,
+            jurisdiction="wisconsin",
+            code="WisStat",
+            title=title,
+            section=section or None,
+            subsection=sub or None,
+            confidence=0.7,  # AUDIT-FIX: no jurisdiction prefix → moderate
+            source=SourceSpan(char_start=m.start(), char_end=m.end(),
+                              quoted_text=_quote_around(text, m.start(), m.end())),
+        ))
+
+    # AUDIT-FIX: bare chapter forms ("ch. 48", "chapter 48").
+    for m in _BARE_CHAPTER_RE.finditer(text):
+        title = m.group("title")
+        canonical = f"wis.stat.{title}"
+        if canonical in seen:
+            continue
+        seen.add(canonical)
+        out.append(StatuteCitation(
+            raw=m.group(0).strip(),
+            canonical=canonical,
+            jurisdiction="wisconsin",
+            code="WisStat",
+            title=title,
+            section=None,
+            subsection=None,
+            confidence=0.6,  # AUDIT-FIX: bare chapter, least specific
             source=SourceSpan(char_start=m.start(), char_end=m.end(),
                               quoted_text=_quote_around(text, m.start(), m.end())),
         ))
@@ -203,10 +265,15 @@ def find_statutes(text: str) -> list[StatuteCitation]:
 # --------------------------------------------------------------------------- #
 
 # e.g. "Smith v. Jones, 123 Wis. 2d 456 (2019)"
+# AUDIT-FIX: the reporter group must absorb an optional ordinal/series suffix
+# ("2d", "3d", "App.") so the trailing \d+ page group binds to the real page.
+# Previously "123 Wis. 2d 456" parsed page=2 (from "2d"), silently corrupting
+# the citation. The reporter is now base words + an optional suffix token.
+_REPORTER = r"[A-Z][\w\.]*(?:\s+[A-Z][\w\.]*)*?(?:\s+(?:\d+[dh]|App\.|Ct\.\s*App\.))?"
 _CASE_LAW_RE = re.compile(
     r"\b(?P<name>[A-Z][\w'\.-]+(?:\s+[A-Z][\w'\.-]+)*)\s+v\.?\s+"
     r"(?P<name2>[A-Z][\w'\.-]+(?:\s+[A-Z][\w'\.-]+)*)"
-    r"(?:,\s*(?P<vol>\d+)\s+(?P<reporter>[A-Z][\w\.\s]+?)\s+(?P<page>\d+))?"
+    r"(?:,\s*(?P<vol>\d+)\s+(?P<reporter>" + _REPORTER + r")\s+(?P<page>\d+))?"
     r"(?:\s*\((?P<court>[\w\s\.]+?)?\s*(?P<year>\d{4})\))?"
 )
 
@@ -227,6 +294,9 @@ def find_case_law(text: str) -> list[CaseLawCitation]:
             page=int(m.group("page")) if m.group("page") else None,
             year=int(m.group("year")) if m.group("year") else None,
             court=(m.group("court") or None) and m.group("court").strip() or None,
+            # AUDIT-FIX: a full cite (vol + reporter + page) is high-confidence;
+            # a bare "X v. Y" with no reporter is a weaker match.
+            confidence=0.85 if (m.group("vol") and m.group("page")) else 0.5,
             source=SourceSpan(char_start=m.start(), char_end=m.end()),
         ))
     return out
@@ -388,7 +458,17 @@ _SSN_RE = re.compile(r"\b\d{3}-\d{2}-\d{4}\b")
 
 
 def find_phones(text: str) -> list[str]:
-    return [f"({a}) {b}-{c}" for a, b, c in _PHONE_RE.findall(text)]
+    # AUDIT-FIX: de-duplicate like find_emails. Previously the same number
+    # appearing twice produced duplicate hints, skewing downstream counts.
+    seen: set[str] = set()
+    out: list[str] = []
+    for a, b, c in _PHONE_RE.findall(text):
+        formatted = f"({a}) {b}-{c}"
+        if formatted in seen:
+            continue
+        seen.add(formatted)
+        out.append(formatted)
+    return out
 
 
 def find_emails(text: str) -> list[str]:

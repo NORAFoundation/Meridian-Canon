@@ -75,10 +75,14 @@ def consistency_check(
             "revisions": None,
         }
     if registry_lookup is None:
+        # AUDIT-FIX (R2): entities were extracted but there is no registry to
+        # cross-reference them against ⇒ the check could not run ⇒ ERROR
+        # (inconclusive), not SURVIVED. We cannot assert consistency we never
+        # tested. The harness declines on decline_reason; the outcome stays honest.
         return {
             "type": "consistency_check",
             "input": f"entities extracted: {entities}",
-            "outcome": ChallengeOutcome.SURVIVED.value,
+            "outcome": ChallengeOutcome.ERROR.value,
             "revisions": None,
             "decline_reason": "no_entity_registry_available",
         }

@@ -69,20 +69,25 @@ def counter_evidence(
     """
     query = negate(claim_statement)
     if search is None:
+        # AUDIT-FIX (R2): no index ⇒ the challenge could not run. Mark ERROR
+        # (inconclusive), not SURVIVED. The harness declines on decline_reason,
+        # but the recorded outcome must not falsely assert the claim survived
+        # a counter-evidence search that never happened.
         return {
             "type": "counter_evidence",
             "input": f"would have queried: {query!r}",
-            "outcome": ChallengeOutcome.SURVIVED.value,
+            "outcome": ChallengeOutcome.ERROR.value,
             "revisions": None,
             "decline_reason": "no_search_index_available_to_query",
         }
     try:
         hits = search(query, top_k) or []
     except Exception as e:
+        # AUDIT-FIX (R2): search backend raised ⇒ inconclusive, not survived.
         return {
             "type": "counter_evidence",
             "input": f"queried {query!r}; search error: {e}",
-            "outcome": ChallengeOutcome.SURVIVED.value,
+            "outcome": ChallengeOutcome.ERROR.value,
             "revisions": None,
             "decline_reason": f"search_callable_raised_{type(e).__name__}",
         }

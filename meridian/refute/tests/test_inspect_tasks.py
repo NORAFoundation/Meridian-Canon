@@ -19,21 +19,27 @@ def test_tri_model_consensus_tie():
 
 
 def test_tri_model_consensus_empty():
-    assert _tri_model_consensus([]) == ChallengeOutcome.SURVIVED
+    # AUDIT-FIX (R2): zero votes means the challenge did not run ⇒ ERROR
+    # (inconclusive), not SURVIVED. Old assertion encoded the broken default.
+    assert _tri_model_consensus([]) == ChallengeOutcome.ERROR
 
 
 def test_parse_outcome_str():
     assert _parse_outcome_str("survived") == "survived"
     assert _parse_outcome_str("The claim is FAILED.") == "failed"
     assert _parse_outcome_str("  revised ") == "revised"
-    assert _parse_outcome_str("???") == "survived"  # default
+    # AUDIT-FIX (R2): unparseable output is now "error" (inconclusive), not
+    # the old least-prejudicial "survived" default.
+    assert _parse_outcome_str("???") == "error"
 
 
 def test_run_adversarial_no_models():
-    """With empty model list, returns SURVIVED gracefully."""
+    """AUDIT-FIX (R2): with an empty model list the challenge cannot run, so
+    it returns ERROR (inconclusive), never SURVIVED."""
     result = run_adversarial_inspect("Sky is blue.", "The sky appears blue.", model_names=[])
     assert isinstance(result, InspectRefutationResult)
-    assert result.consensus_outcome in list(ChallengeOutcome)
+    assert result.consensus_outcome == ChallengeOutcome.ERROR
+    assert result.outcome == ChallengeOutcome.ERROR
 
 
 def test_run_adversarial_echo_models():

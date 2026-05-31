@@ -74,3 +74,35 @@ ALTER TABLE acquisitions
 
 CREATE INDEX acquisitions_obs_attestation_idx
   ON acquisitions(obs_attestation_id) WHERE obs_attestation_id IS NOT NULL;
+
+-- AUDIT-FIX (CRIT-4): attestations are append-only. A Canon-conformant
+-- artifact, once emitted and sealed, must never be mutated or deleted —
+-- the chain_hash/signature bind the row to its wire format, so any UPDATE
+-- or DELETE is by definition a forensic-integrity violation. Enforce at
+-- two layers: privilege revocation (defense in depth) and a hard trigger
+-- that fires even for table owners / BYPASSRLS roles.
+REVOKE UPDATE, DELETE ON attestations FROM PUBLIC;
+
+CREATE OR REPLACE FUNCTION attestations_deny_mutation() RETURNS trigger AS $$
+BEGIN
+  RAISE EXCEPTION 'attestations is append-only';
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER attestations_no_mutation
+  BEFORE UPDATE OR DELETE ON attestations
+  FOR EACH ROW EXECUTE FUNCTION attestations_deny_mutation();
+
+-- AUDIT-FIX (CRIT-4): enable RLS so the attestation store is not world-
+-- readable. Owner/counsel may read all attestations; everything else is
+-- default-deny (no positive SELECT policy). Service-role workers bypass RLS
+-- and write rows normally. INSERT visibility is unconstrained because the
+-- audit/seal pipeline mediates writes; the deny-mutation trigger above
+-- already blocks UPDATE/DELETE for everyone including the owner.
+ALTER TABLE attestations ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY attestations_select ON attestations FOR SELECT
+  USING ((SELECT current_actor_role()) IN ('owner', 'counsel'));
+
+CREATE POLICY attestations_insert ON attestations FOR INSERT
+  WITH CHECK (true);   -- writes mediated by the seal/emit pipeline

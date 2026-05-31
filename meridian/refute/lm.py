@@ -73,7 +73,11 @@ def _parse_outcome(text: str) -> ChallengeOutcome:
     """Parse a model's free-text response into a ChallengeOutcome.
 
     The prompt asks for one word, but models add prose; this normalizes.
-    Defaults to 'survived' (least-prejudicial) on parse failure.
+
+    # AUDIT-FIX (R2): an unparseable response means we genuinely do not know
+    # what the adversary model concluded. That is INCONCLUSIVE, not a
+    # successful survival of the claim. Returning SURVIVED here let a garbled
+    # or empty model reply silently clear a claim. Default is now ERROR.
     """
     norm = text.strip().lower()
     for token in norm.split():
@@ -84,7 +88,7 @@ def _parse_outcome(text: str) -> ChallengeOutcome:
             return ChallengeOutcome.FAILED
         if clean in {"revised", "modified", "weakened"}:
             return ChallengeOutcome.REVISED
-    return ChallengeOutcome.SURVIVED
+    return ChallengeOutcome.ERROR  # AUDIT-FIX (R2): unparseable ⇒ inconclusive
 
 
 # --- Protocol -------------------------------------------------------------
@@ -189,7 +193,9 @@ class OllamaAdapter:
         try:
             text = self.complete(prompt, max_tokens=24, temperature=0.0)
         except RuntimeError:
-            return ChallengeOutcome.SURVIVED  # network/down → least-prejudicial; harness records this
+            # AUDIT-FIX (R2): network/down ⇒ the challenge could not run.
+            # Absence of refutation must NOT read as successful refutation.
+            return ChallengeOutcome.ERROR
         return _parse_outcome(text)
 
 
@@ -249,7 +255,7 @@ class OpenAIAdapter:
         try:
             text = self.complete(prompt, max_tokens=24, temperature=0.0)
         except (urllib.error.URLError, TimeoutError, RuntimeError):
-            return ChallengeOutcome.SURVIVED
+            return ChallengeOutcome.ERROR  # AUDIT-FIX (R2): could not run ⇒ inconclusive
         return _parse_outcome(text)
 
 
@@ -321,5 +327,5 @@ class LiteLLMAdapter:
         try:
             text = self.complete(prompt, max_tokens=24, temperature=0.0)
         except Exception:
-            return ChallengeOutcome.SURVIVED  # least-prejudicial on failure
+            return ChallengeOutcome.ERROR  # AUDIT-FIX (R2): failure ⇒ inconclusive, never survived
         return _parse_outcome(text)

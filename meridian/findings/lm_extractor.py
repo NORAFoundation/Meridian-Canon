@@ -11,13 +11,16 @@ schema below is what the LM sees; the rich schema is what we store.
 
 from __future__ import annotations
 
+import logging
 import os
 import json
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
+
+logger = logging.getLogger(__name__)
 
 from .rich_schema import (
     RichFindings, DocumentKind, ProceduralPosture, ToneRegister,
@@ -286,13 +289,26 @@ def merge_to_rich(
     # ---- dates: union, prefer regex spans
     dates = list(regex_hints.get("dates", []))
     seen_iso = {d.iso for d in dates}
+    # AUDIT-FIX (P4b): a date that fails ISO validation must NEVER be silently
+    # erased — a dropped date could be a dispositive event (hearing, deadline,
+    # statute-of-limitations bound). Catch ValidationError specifically, log it,
+    # and record the bad value as a human-review gap.
+    dropped_date_gaps: list[str] = []
     for iso in lm.additional_dates_iso:
         if iso and iso not in seen_iso:
             try:
                 dates.append(DateReference(iso=iso, raw=iso, certainty="inferred"))
                 seen_iso.add(iso)
-            except Exception:
-                pass
+            except ValidationError:
+                logger.warning(
+                    "merge_to_rich: dropping LM date %r — failed ISO 8601 validation; "
+                    "surfaced as human-review gap, not silently erased",
+                    iso,
+                )
+                dropped_date_gaps.append(
+                    f"dropped_unparseable_date:{iso!r} (LM emitted non-ISO date; "
+                    f"verify against source — value not discarded silently)"
+                )
 
     # ---- money: regex exact; LM-extracted amounts skipped to avoid duplication
     monetary = list(regex_hints.get("monetary_amounts", []))
@@ -379,7 +395,9 @@ def merge_to_rich(
         extracted_at_iso=datetime.now(timezone.utc).isoformat(),
         overall_confidence=lm.overall_confidence,
         field_confidences={},
-        flags_for_human_review=lm.flags_for_human_review,
+        # AUDIT-FIX (P4b): append dropped-date gaps so the human reviewer sees
+        # every date the LM emitted that could not be parsed.
+        flags_for_human_review=list(lm.flags_for_human_review) + dropped_date_gaps,
         regex_lm_agreement_score=agreement,
         truncated=truncated,
     )

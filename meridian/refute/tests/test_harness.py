@@ -13,6 +13,7 @@ from meridian.canon import emit, keys, signing
 from meridian.canon.hashing import sha256_hex
 from meridian.canon.schema import ChallengeOutcome
 from meridian.refute import EchoAdapter, run_harness
+from meridian.refute.harness import RefutationFailedError
 
 
 CUSTODIAN = "harness-test"
@@ -198,3 +199,98 @@ def test_harness_output_can_be_sealed(tmp_path: Any) -> None:
 
     sealed = emit.emit(att, custodian=CUSTODIAN, public_key_url=url, fingerprint=fingerprint)
     assert sealed["seal"]["chain_hash"].startswith("sha256:")
+
+
+# --- AUDIT-FIX (R1): FAILED outcome must block sealing -----------------------
+
+
+def _failed_models() -> list[EchoAdapter]:
+    """Three adapters yielding a 2/3 FAILED consensus (majority rule)."""
+    return [
+        EchoAdapter(name="m1", family="llama", outcome=ChallengeOutcome.FAILED),
+        EchoAdapter(name="m2", family="mistral", outcome=ChallengeOutcome.FAILED),
+        EchoAdapter(name="m3", family="gemma", outcome=ChallengeOutcome.SURVIVED),
+    ]
+
+
+def test_failed_consensus_raises_rather_than_silently_seals() -> None:
+    """R1: a FAILED challenge consensus must NOT silently pass through. With
+    the default (remove_failed_claims=False) the harness raises rather than
+    producing a block a caller would seal as valid."""
+    att = _enrichment_attestation()
+    with pytest.raises(RefutationFailedError) as exc:
+        run_harness(att, models=_failed_models())
+    # The refuted claim id must be named in the error.
+    assert "claim-EH-1" in str(exc.value)
+
+
+def test_failed_consensus_removes_claim_when_permitted() -> None:
+    """R1: with remove_failed_claims=True the refuted claim is dropped from
+    findings (the 'claim removed' branch of the documented contract), and any
+    challenge that targeted only the removed claim is pruned."""
+    att = _enrichment_attestation()
+    block = run_harness(att, models=_failed_models(), remove_failed_claims=True)
+    surviving_ids = {c["claim_id"] for c in att["findings"]["claims"]}
+    assert "claim-EH-1" not in surviving_ids, "refuted claim must be removed"
+    # No challenge in the emitted block may target the removed claim.
+    for ch in block["challenges"]:
+        assert "claim-EH-1" not in ch.get("targets", [])
+    # No surviving challenge may still carry a FAILED outcome.
+    assert all(ch.get("outcome") != "failed" for ch in block["challenges"])
+
+
+def test_failed_removal_block_is_sealable_and_walks_valid(tmp_path: Any) -> None:
+    """After removing the refuted claim, the resulting attestation seals and
+    the third-party verifier returns valid (no lingering FAILED outcome)."""
+    from meridian.canon import walk
+
+    private, public, fingerprint = keys.keygen(CUSTODIAN)
+    pem = signing.public_key_to_pem(public)
+    pem_path = tmp_path / "r1.pem"
+    pem_path.write_bytes(pem)
+    url = f"file://{pem_path}"
+
+    att = _enrichment_attestation()
+    block = run_harness(att, models=_failed_models(), remove_failed_claims=True)
+    att["refutation"] = block
+    sealed = emit.emit(att, custodian=CUSTODIAN, public_key_url=url, fingerprint=fingerprint)
+    result = walk.walk(sealed)
+    assert result["verdict"] == "valid", result
+
+
+def test_contested_does_not_raise_but_is_recorded() -> None:
+    """R1/R3: CONTESTED (all-disagree) does not raise — the claim is retained
+    with a disagreement gap — but it is recorded as contested so the verifier
+    can fail it closed."""
+    att = _enrichment_attestation()
+    models = [
+        EchoAdapter(name="m1", outcome=ChallengeOutcome.SURVIVED),
+        EchoAdapter(name="m2", outcome=ChallengeOutcome.FAILED),
+        EchoAdapter(name="m3", outcome=ChallengeOutcome.REVISED),
+    ]
+    block = run_harness(att, models=models)  # must NOT raise
+    contested = [c for c in block["challenges"] if c.get("consensus_outcome") == "contested"]
+    assert contested
+
+
+# --- AUDIT-FIX (R2): error/inconclusive never laundered into survived --------
+
+
+def test_error_outcome_recorded_as_gap_not_survived() -> None:
+    """R2: an adversary that errors (here, all three error) produces an ERROR
+    consensus that is recorded honestly as an inconclusive gap on the claim —
+    never silently dropped and never converted to 'survived'."""
+    att = _enrichment_attestation()
+    erroring = [
+        EchoAdapter(name="m1", outcome=ChallengeOutcome.ERROR),
+        EchoAdapter(name="m2", outcome=ChallengeOutcome.ERROR),
+        EchoAdapter(name="m3", outcome=ChallengeOutcome.ERROR),
+    ]
+    block = run_harness(att, models=erroring)
+    advr = [c for c in block["challenges"] if c["type"] == "adversarial_prompt"]
+    assert advr
+    assert all(c["outcome"] == "error" for c in advr), "error must not become survived"
+    # The inconclusive result is surfaced as a gap on the targeted claim.
+    target_id = advr[0]["targets"][0]
+    claim = next(c for c in att["findings"]["claims"] if c["claim_id"] == target_id)
+    assert any("inconclusive" in g for g in claim["gaps"])

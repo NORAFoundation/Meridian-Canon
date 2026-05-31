@@ -218,7 +218,12 @@ CREATE OR REPLACE FUNCTION audit_log_hash_trigger() RETURNS trigger AS $$
 DECLARE
   prev text;
 BEGIN
-  SELECT hash INTO prev FROM audit_log ORDER BY id DESC LIMIT 1;
+  -- AUDIT-FIX (CRIT-1): lock the current chain tail (FOR UPDATE) so two
+  -- concurrent inserts cannot read the same prev_hash and fork the chain.
+  -- The row lock serializes chain extension: the second inserter blocks
+  -- until the first commits, then reads the new tail. Hash composition is
+  -- unchanged.
+  SELECT hash INTO prev FROM audit_log ORDER BY id DESC LIMIT 1 FOR UPDATE;
   NEW.prev_hash := prev;
   NEW.hash := sha256_hex(
     coalesce(prev, '') || '|' ||

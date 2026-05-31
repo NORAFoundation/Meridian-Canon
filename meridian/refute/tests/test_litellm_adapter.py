@@ -26,12 +26,16 @@ def test_litellm_adapter_no_litellm_raises():
         adapter.complete("hello")
 
 
-def test_litellm_adapter_refute_survives_error():
-    """refute() returns SURVIVED (least-prejudicial) when complete() raises."""
+def test_litellm_adapter_refute_errors_not_survives():
+    """AUDIT-FIX (R2): when complete() raises (model unreachable, litellm
+    absent, etc.) refute() must return ERROR (inconclusive), NOT SURVIVED.
+    The old behavior returned SURVIVED 'least-prejudicial', which silently
+    cleared a claim that was never actually challenged — the core epistemic
+    hole. Updated to assert the corrected outcome."""
     adapter = LiteLLMAdapter("nonexistent-model-xyz-123456789")
     # Will fail to connect/call, should not raise
     outcome = adapter.refute("The sky is blue.", "Source: sky is blue on clear days.")
-    assert outcome == ChallengeOutcome.SURVIVED
+    assert outcome == ChallengeOutcome.ERROR
 
 
 def test_litellm_adapter_protocol_conformance():

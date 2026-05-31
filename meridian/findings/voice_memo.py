@@ -53,6 +53,10 @@ class VoiceMemoExtractor:
             from .enm import EntityMap
             masked_text, emap = document_text, EntityMap()
 
+        # AUDIT-FIX (P4c): long-form voice-memo transcripts (300+ .m4a notes)
+        # routinely exceed 30000 chars. Truncating without a gap means a late
+        # exculpatory statement in the tail would vanish from the record.
+        truncated = len(masked_text) > 30000
         prompt = PROMPT_TEMPLATE.format(masked_text=masked_text[:30000])
         result_obj: VoiceMemoFindings = self.ctx.model.complete_json(  # type: ignore[assignment]
             prompt, VoiceMemoFindings, max_tokens=1024, temperature=0.0
@@ -109,6 +113,17 @@ class VoiceMemoExtractor:
             supports=[observation_id],
             gaps=intent_gaps,
         ))
+        if truncated:
+            # AUDIT-FIX (P4c): record exactly what the LM did not see.
+            claims.append(claim(
+                f"Transcript truncated before analysis: {len(masked_text)} chars total.",
+                inference_type="observation",
+                supports=[observation_id],
+                gaps=[
+                    "transcript truncated: LM saw first 30000 chars only; "
+                    "remainder not analyzed",
+                ],
+            ))
         if result_obj.asr_low_confidence_segments > 0:
             claims.append(claim(
                 f"Transcript contains {result_obj.asr_low_confidence_segments} low-confidence ASR segment(s).",

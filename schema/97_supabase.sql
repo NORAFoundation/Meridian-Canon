@@ -86,6 +86,11 @@ COMMENT ON TABLE storage.buckets IS
 -- raw-evidence + derived) a corresponding granted resource.  Workers use
 -- service_role and bypass these.  No INSERT/UPDATE/DELETE policy is added
 -- for human users — uploads happen through workers (service_role).
+--
+-- AUDIT-FIX (CRIT-5): every current_actor_role()/current_actor_id() call in
+-- the storage policies below is wrapped in a scalar subquery (SELECT ...) so
+-- Postgres evaluates it once per statement instead of once per storage object
+-- row scanned. Documented Supabase RLS-performance pattern.
 -- ----------------------------------------------------------------------------
 
 -- raw-evidence: owner + counsel only by default; paralegal via grant.
@@ -93,12 +98,12 @@ CREATE POLICY storage_raw_evidence_read ON storage.objects FOR SELECT
   USING (
     bucket_id = 'raw-evidence'
     AND (
-      current_actor_role() IN ('owner', 'counsel')
+      (SELECT current_actor_role()) IN ('owner', 'counsel')
       OR (
-        current_actor_role() = 'paralegal'
+        (SELECT current_actor_role()) = 'paralegal'
         AND EXISTS (
           SELECT 1 FROM acl_grants g
-          WHERE g.actor_id = current_actor_id()
+          WHERE g.actor_id = (SELECT current_actor_id())
             AND g.resource_type = 'storage_object'
             AND g.resource_id::text = storage.objects.id::text
             AND 'read' = ANY(g.permissions)
@@ -113,7 +118,7 @@ CREATE POLICY storage_raw_evidence_read ON storage.objects FOR SELECT
 CREATE POLICY storage_derived_read ON storage.objects FOR SELECT
   USING (
     bucket_id = 'derived'
-    AND current_actor_role() IN ('owner', 'counsel', 'paralegal')
+    AND (SELECT current_actor_role()) IN ('owner', 'counsel', 'paralegal')
   );
 
 -- productions: owner/counsel/paralegal can see what was produced.
@@ -122,7 +127,7 @@ CREATE POLICY storage_derived_read ON storage.objects FOR SELECT
 CREATE POLICY storage_productions_read ON storage.objects FOR SELECT
   USING (
     bucket_id = 'productions'
-    AND current_actor_role() IN ('owner', 'counsel', 'paralegal')
+    AND (SELECT current_actor_role()) IN ('owner', 'counsel', 'paralegal')
   );
 
 -- warc: owner/counsel only — the immutable web captures of court dockets
@@ -131,7 +136,7 @@ CREATE POLICY storage_productions_read ON storage.objects FOR SELECT
 CREATE POLICY storage_warc_read ON storage.objects FOR SELECT
   USING (
     bucket_id = 'warc'
-    AND current_actor_role() IN ('owner', 'counsel')
+    AND (SELECT current_actor_role()) IN ('owner', 'counsel')
   );
 
 -- Default-deny on writes for non-service-role.  Workers run as service_role
